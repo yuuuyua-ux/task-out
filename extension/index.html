@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tab Out</title>
+  <title>Task Out</title>
 
   <!-- Google Fonts: Newsreader (for headings/numbers) + DM Sans (for body text) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -27,6 +27,45 @@
       <div class="date" id="dateDisplay"></div>
     </div>
   </header>
+  <section class="ai-toolbar" aria-label="页签整理">
+    <div class="ai-actions"><button id="viewTopic" class="ai-button">按 AI 主题</button><button id="viewDomain" class="ai-button">按网站</button></div>
+    <div class="ai-actions"><button id="manageGroups" class="ai-button">调整分组</button><button id="aiSettings" class="ai-button">模型设置</button><button id="aiRun" class="ai-button primary">整理待分类页签</button><button id="aiCancel" class="ai-button" hidden>取消</button></div>
+    <div class="ai-options">
+      <p id="aiViewHint" class="ai-help">最近访问的排在前面</p>
+      <label class="ai-help ai-auto"><input id="aiAuto" type="checkbox" checked> 新增或跳转后自动分类</label>
+    </div>
+    <details class="ai-guide ai-help">
+      <summary>使用说明</summary>
+      <div id="topicHelp">拖入主题卡片可移动页签；拖到卡片外的空白处松手，会新建分组。手动移动后，AI 不会再调整其归属。</div>
+      <div>页签和分组均按最近访问时间排序。开启自动分类后，新增或跳转的页签会自动整理，已有分组保持不变。</div>
+      <div>AI 分类会将待分类页签的标题和网址、已有主题名称及分组偏好发送到模型设置中的网关。</div>
+    </details>
+    <p id="aiStatus" role="status" aria-atomic="true" hidden></p>
+  </section>
+  <dialog id="groupsDialog" class="ai-dialog">
+    <h2>调整主题分组</h2><p class="ai-help">手动移动的页签固定归属，AI 不会再移动；已有主题保持不变。当前调整在本次浏览器会话内生效。</p>
+    <label>分组<select id="editGroup"></select></label>
+    <label>组名<input id="groupName" maxlength="60"></label>
+    <div class="ai-actions"><button id="renameGroup" class="ai-button">重命名</button><button id="deleteGroup" class="ai-button">删除空组</button><button id="createGroup" class="ai-button">按此名称新建组</button></div>
+    <label>选择要移动的页签<select id="moveTab"></select></label>
+    <label>目标分组<select id="moveTarget"></select></label>
+    <div class="ai-actions"><button id="moveGroupTab" class="ai-button primary">移动并固定归属</button></div>
+    <p id="groupEditStatus" role="status" class="ai-help"></p>
+    <div class="ai-actions"><button id="closeGroupEditor" class="ai-button">完成</button></div>
+  </dialog>
+  <dialog id="aiDialog" class="ai-dialog">
+    <form id="aiForm">
+      <h2>模型设置</h2>
+      <p class="ai-help">兼容 Chat Completions 接口。手动整理或开启自动分类后，会将当前 Chrome 各窗口待分类页签的标题和网址、已有主题名称及分组偏好发送到此网关。只整理本页卡片，不修改浏览器标签组。</p>
+      <label>网关 Base URL<input id="aiBase" type="url" required placeholder="https://api.stepfun.com/step_plan/v1"></label>
+      <label>API Key<input id="aiKey" type="password" autocomplete="off" placeholder="填写 API Key"></label>
+      <p id="aiKeyHint" class="ai-help">Key 仅保存在本扩展的本地存储中。</p>
+      <label>模型名称<input id="aiModel" required placeholder="step-3.7-flash"></label>
+      <label>分组偏好（可选）<textarea id="aiRules" rows="3" placeholder="例如：按工作项目分组，组名使用中文；天问和 Mana 分开。"></textarea></label>
+      <p id="aiFormError" class="ai-error" role="alert"></p>
+      <div class="ai-actions"><button type="button" id="aiForget" class="ai-button">清除 Key</button><button type="button" id="aiDismiss" class="ai-button">取消</button><button type="submit" class="ai-button primary">保存设置</button></div>
+    </form>
+  </dialog>
 
   <!-- ================================================================
        TAB OUT DUPES BANNER — appears when you have extra Tab Out tabs open
@@ -40,10 +79,10 @@
         </svg>
       </div>
       <div class="tab-cleanup-text">
-        You have <strong id="tabOutDupeCount"></strong> Tab Out tabs open. Keep just this one?
+        当前打开了 <strong id="tabOutDupeCount"></strong> 个 Tab Out 页面，只保留当前这个？
       </div>
     </div>
-    <button class="tab-cleanup-btn" data-action="close-tabout-dupes">Close extras</button>
+    <button class="tab-cleanup-btn" data-action="close-tabout-dupes">关闭多余页面</button>
   </div>
 
   <!-- ================================================================
@@ -54,10 +93,10 @@
        ================================================================ -->
   <div class="dashboard-columns" id="dashboardColumns">
 
-    <!-- LEFT COLUMN: Open tabs -->
+    <!-- LEFT COLUMN: 已打开页签 -->
     <div class="active-section" id="openTabsSection" style="display:none">
       <div class="section-header">
-        <h2 id="openTabsSectionTitle">Right now</h2>
+        <h2 id="openTabsSectionTitle">当前打开</h2>
         <div class="section-line"></div>
         <div class="section-count" id="openTabsSectionCount"></div>
       </div>
@@ -67,7 +106,7 @@
     <!-- RIGHT COLUMN: Saved for Later checklist -->
     <div class="deferred-column" id="deferredColumn" style="display:none">
       <div class="section-header">
-        <h2>Saved for later</h2>
+        <h2>稍后查看</h2>
         <div class="section-line"></div>
         <div class="section-count" id="deferredCount"></div>
       </div>
@@ -77,18 +116,18 @@
 
       <!-- Empty state — shown when no active deferred tabs -->
       <div class="deferred-empty" id="deferredEmpty" style="display:none">
-        Nothing saved. Living in the moment.
+        暂无保存的页签。
       </div>
 
       <!-- Archive section — collapsed by default -->
       <div class="deferred-archive" id="deferredArchive" style="display:none">
         <button class="archive-toggle" id="archiveToggle">
           <svg class="archive-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
-          Archive
+          已完成
           <span class="archive-count" id="archiveCount"></span>
         </button>
         <div class="archive-body" id="archiveBody" style="display:none">
-          <input type="text" class="archive-search" id="archiveSearch" placeholder="Search archived tabs...">
+          <input type="text" class="archive-search" id="archiveSearch" placeholder="搜索已完成的页签…">
           <div class="archive-list" id="archiveList"></div>
         </div>
       </div>
@@ -103,11 +142,11 @@
     <div class="footer-stats">
       <div class="stat">
         <div class="stat-num" id="statTabs">—</div>
-        <div class="stat-label">Open tabs</div>
+        <div class="stat-label">已打开页签</div>
       </div>
     </div>
     <div class="last-refresh">
-      <span style="color: var(--muted); font-size: 11px;"><a href="https://github.com/zarazhangrui/tab-out" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Tab Out</a> by <a href="https://x.com/zarazhangrui" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Zara</a></span>
+      <span style="color: var(--muted); font-size: 11px;"><a href="https://github.com/zarazhangrui/tab-out" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Tab Out</a> · 作者 <a href="https://x.com/zarazhangrui" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Zara</a></span>
     </div>
   </footer>
 
@@ -130,6 +169,10 @@
 <script src="config.local.js" onerror="/* no personal config, that's fine */"></script>
 
 <!-- Main dashboard logic — loads last so the DOM is ready -->
+<script src="ai.js"></script>
 <script src="app.js"></script>
+<script src="ai-ui.js"></script>
+<script src="group-editor.js"></script>
+<script src="drag-groups.js"></script>
 </body>
 </html>

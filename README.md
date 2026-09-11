@@ -1,91 +1,52 @@
-# Tab Out
+# Task Out
 
-**Keep tabs on your tabs.**
+基于 [Zara 的 Tab Out](https://github.com/zarazhangrui/tab-out) 迭代的中文 Chrome 页签管理扩展。集中查看当前 Chrome 各窗口的页签，按网站或 AI 主题整理。
 
-Tab Out is a Chrome extension that replaces your new tab page with a dashboard of everything you have open. Tabs are grouped by domain, with homepages (Gmail, X, LinkedIn, etc.) pulled into their own group. Close tabs with a satisfying swoosh + confetti.
+## 本轮更新
 
-No server. No account. No external API calls. Just a Chrome extension.
+- 中文界面，AI 主题视图优先。
+- 支持自定义兼容 Chat Completions 的网关、API Key、模型和分组偏好。
+- 新增或网址变化的页签自动分类；只处理待分类页签，保留已有主题及手动归属。
+- 页签和主题按最近访问时间排序。
+- 拖入已有主题可移动页签；拖到卡片外空白处松手可新建分组。手动移动后固定归属。
+- 点击主题名称改名：回车或失焦保存，Esc 取消；支持中文输入法。
+- 「调整分组」支持新建、改名、移动与删除空组；卡片上的空组删除会保存，刷新后不再出现。
+- 操作说明默认折叠，拖动时显示落点提示。
 
----
+## 安装
 
-## Install with a coding agent
+1. 克隆本仓库：`git clone https://github.com/yuuuyua-ux/task-out.git`。
+2. 打开 `chrome://extensions`，开启开发者模式。
+3. 点击「加载已解压的扩展程序」，选择仓库内的 `extension` 目录。
+4. 打开新标签页，在「模型设置」中配置网关、模型和 API Key。
 
-Send your coding agent (Claude Code, Codex, etc.) this repo and say **"install this"**:
+无需构建。已有 Tab Out 安装仍使用旧目录时，不会自动切换到此仓库。
 
-```
-https://github.com/zarazhangrui/tab-out
-```
+## 模型配置
 
-The agent will walk you through it. Takes about 1 minute.
+默认网关为 `https://api.stepfun.com/step_plan/v1`，默认模型为 `step-3.7-flash`；也可填写其他兼容服务。需自行提供有效 Key 并授权访问网关。
 
----
+Key 只保存在扩展本地存储，不在源码中。更换网关时需重新填写 Key。分类会将待分类页签标题、网址、已有主题名称和分组偏好发送到所配置的网关。未配置 Key 时仍可使用网站分组。
 
-## Features
+## 数据与使用边界
 
-- **See all your tabs at a glance** on a clean grid, grouped by domain
-- **Homepages group** pulls Gmail inbox, X home, YouTube, LinkedIn, GitHub homepages into one card
-- **Close tabs with style** with swoosh sound + confetti burst
-- **Duplicate detection** flags when you have the same page open twice, with one-click cleanup
-- **Click any tab to jump to it** across windows, no new tab opened
-- **Save for later** bookmark tabs to a checklist before closing them
-- **Localhost grouping** shows port numbers next to each tab so you can tell your vibe coding projects apart
-- **Expandable groups** show the first 8 tabs with a clickable "+N more"
-- **100% local** your data never leaves your machine
-- **Pure Chrome extension** no server, no Node.js, no npm, no setup beyond loading the extension
+- AI 主题及手动调整保存在本次浏览器会话中，刷新页面会保留；不作为长期收藏保存。
+- 整理只改变总览卡片，不创建 Chrome 原生标签组，也不会自动收藏临时分组。
+- 「保存到稍后查看」是用户主动操作，并会关闭对应页签。
+- 当前只读取安装此扩展的 Chrome 配置文件中的窗口，不汇总其他浏览器。
+- 同网址的重复页签会合并显示；拖动时移动对应的一个真实页签。
+- 页面图标沿用上游的 Google favicon 服务。
 
----
+## 验证
 
-## Manual Setup
+安装 Node.js 后在仓库目录运行：
 
-**1. Clone the repo**
-
-```bash
-git clone https://github.com/zarazhangrui/tab-out.git
-```
-
-**2. Load the Chrome extension**
-
-1. Open Chrome and go to `chrome://extensions`
-2. Enable **Developer mode** (top-right toggle)
-3. Click **Load unpacked**
-4. Navigate to the `extension/` folder inside the cloned repo and select it
-
-**3. Open a new tab**
-
-You'll see Tab Out.
-
----
-
-## How it works
-
-```
-You open a new tab
-  -> Tab Out shows your open tabs grouped by domain
-  -> Homepages (Gmail, X, etc.) get their own group at the top
-  -> Click any tab title to jump to it
-  -> Close groups you're done with (swoosh + confetti)
-  -> Save tabs for later before closing them
+```sh
+node --test tests/*.test.cjs
 ```
 
-Everything runs inside the Chrome extension. No external server, no API calls, no data sent anywhere. Saved tabs are stored in `chrome.storage.local`.
+测试覆盖模型响应校验、增量分类、手动归属、空组删除持久化、自动分类调度及拖放事件逻辑。自动测试不等于完整的浏览器交互验收。
 
----
+## 来源
 
-## Tech stack
-
-| What | How |
-|------|-----|
-| Extension | Chrome Manifest V3 |
-| Storage | chrome.storage.local |
-| Sound | Web Audio API (synthesized, no files) |
-| Animations | CSS transitions + JS confetti particles |
-
----
-
-## License
-
-MIT
-
----
-
-Built by [Zara](https://x.com/zarazhangrui)
+原项目：[zarazhangrui/tab-out](https://github.com/zarazhangrui/tab-out)。保留上游源代码、素材及许可文件；Task Out 在其基础上增加上述功能。

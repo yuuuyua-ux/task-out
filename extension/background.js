@@ -1,3 +1,15 @@
+const groupMigrationReady = (async () => {
+  const backup = (await chrome.storage.local.get('groupUpgradeBackup')).groupUpgradeBackup;
+  if (!backup) return;
+  const existing = (await chrome.storage.session.get('aiView')).aiView;
+  if (!existing) {
+    const tabs = await chrome.tabs.query({});
+    backup.groups = backup.groups.map(g => ({...g,members:g.members.filter(m => tabs.some(t => t.id===m.id && t.url===m.url))}));
+    await chrome.storage.session.set({aiView:backup});
+  }
+  await chrome.storage.local.remove('groupUpgradeBackup');
+})();
+importScripts('ai.js', 'auto.js');
 /**
  * background.js — Service Worker for Badge Updates
  *

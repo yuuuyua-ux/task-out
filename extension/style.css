@@ -1156,3 +1156,42 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
   opacity: 0.6;
   flex-shrink: 0;
 }
+
+/* AI controls match the existing warm paper dashboard. */
+.ai-toolbar { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; margin:-20px 0 28px; }
+.ai-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.ai-options { flex-basis:100%; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 20px; }
+.ai-auto { display:inline-flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap; }
+.ai-button { font:inherit; font-size:13px; padding:9px 14px; border:1px solid var(--warm-gray); border-radius:8px; background:var(--card-bg); color:var(--ink); cursor:pointer; }
+.ai-button:hover { border-color:var(--accent-sage); }
+.ai-button.primary,.ai-button[aria-pressed="true"] { background:var(--accent-sage); border-color:var(--accent-sage); color:white; }
+.ai-button:disabled { opacity:.5; cursor:wait; }
+#aiStatus { flex-basis:100%; padding:9px 12px; border-radius:8px; background:rgba(90,107,122,.06); font-size:13px; line-height:1.6; color:var(--accent-slate); overflow-wrap:anywhere; }
+#aiStatus[hidden] { display:none; }
+.ai-dialog { margin:auto; width:min(560px,calc(100vw - 32px)); max-height:90vh; padding:28px; border:1px solid var(--warm-gray); border-radius:16px; background:var(--paper); color:var(--ink); box-shadow:0 20px 80px #0003; }
+.ai-dialog::backdrop { background:#1a161355; }
+.ai-dialog h2 { font-size:22px; margin-bottom:12px; }
+.ai-dialog label { display:block; margin:15px 0 8px; font-size:13px; }
+.ai-dialog input,.ai-dialog textarea { display:block; width:100%; margin-top:7px; padding:10px 12px; border:1px solid var(--warm-gray); border-radius:7px; background:var(--card-bg); font:inherit; font-size:14px; color:var(--ink); }
+.ai-dialog textarea { resize:vertical; }
+.ai-help { font-size:12px; line-height:1.7; color:var(--accent-slate); }
+.ai-error { color:var(--accent-rose); margin:12px 0; font-size:13px; }
+.ai-dialog .ai-actions { justify-content:flex-end; margin-top:18px; }
+.ai-dialog select { display:block; width:100%; margin-top:7px; padding:10px; border:1px solid var(--warm-gray); border-radius:7px; background:var(--card-bg); font:inherit; font-size:14px; }
+.page-chip[draggable="true"] { cursor:grab; }
+.page-chip[draggable="true"]:active { cursor:grabbing; }
+.dragging-tab { opacity:.4; }
+.dragging-topic-tab .domain-card[data-drop-group]:not([data-drop-group=""]) { outline:1px dashed var(--accent-sage); outline-offset:3px; }
+.domain-card.drop-target { outline:3px solid var(--accent-sage) !important; background:#edf5eb; }
+
+.ai-guide { flex-basis:100%; }
+.ai-guide summary { cursor:pointer; width:fit-content; }
+.ai-guide summary:hover { color:var(--ink); }
+.ai-guide[open] { padding:10px 12px; background:rgba(90,107,122,.04); border-radius:8px; }
+.ai-guide div { margin-top:6px; max-width:760px; }
+.dragging-topic-tab::after { content:'拖入主题可移动 · 在卡片外空白处松手可新建分组'; position:fixed; bottom:28px; left:50%; transform:translateX(-50%); z-index:1000; pointer-events:none; padding:12px 20px; border-radius:12px; background:var(--ink); color:var(--paper); font-size:13px; box-shadow:0 4px 20px #0002; max-width:90vw; width:max-content; }
+
+.editable-group-name { font:inherit; font-weight:600; color:inherit; background:none; border:0; padding:0; text-align:left; cursor:text; border-radius:4px; }
+.editable-group-name:hover { background:rgba(90,107,122,.08); }
+.editable-group-name:focus-visible { outline:2px solid var(--accent-sage); outline-offset:3px; }
+.group-name-input { min-width:0; width:100%; max-width:100%; font:inherit; font-weight:600; color:var(--ink); background:var(--card-bg); border:1px solid var(--accent-sage); border-radius:4px; padding:3px 6px; }
