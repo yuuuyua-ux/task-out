@@ -1,0 +1,2 @@
+{"id":"example-research-1","kind":"session","source":{"id":"example-agent","label":"示例 Agent","icon":"message"},"title":"比较三种任务看板方案","createdAt":1788825600000,"updatedAt":1788912000000,"summary":"已完成方案比较，下一步确认首版范围。","status":"unknown"}
+{"id":"example-web-1","kind":"web","source":{"id":"browser","label":"浏览器","icon":"globe"},"title":"示例参考资料","url":"https://example.com/reference","createdAt":1788825600000,"updatedAt":1788912000000}

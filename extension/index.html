@@ -1,178 +1,57 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Task Out</title>
-
-  <!-- Google Fonts: Newsreader (for headings/numbers) + DM Sans (for body text) -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-
-  <link rel="stylesheet" href="style.css">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Task Out · 工作总览</title>
+  <link rel="icon" href="icons/task-out32.png" type="image/png">
+  <link rel="stylesheet" href="dashboard.css">
+  <script src="core.js" defer></script>
+  <script src="masonry.js" defer></script>
+  <script src="archive-effects.js" defer></script>
+  <script src="dashboard.js" defer></script>
 </head>
 <body>
-<div class="container">
-
-
-
-  <!-- ================================================================
-       HEADER — greeting on the left
-       ================================================================ -->
-  <header>
-    <div class="header-left">
-      <!-- "Good afternoon" — written by getGreeting() in app.js -->
-      <h1 id="greeting"></h1>
-      <!-- "Friday, April 4, 2026" — written by getDateDisplay() in app.js -->
-      <div class="date" id="dateDisplay"></div>
-    </div>
-  </header>
-  <section class="ai-toolbar" aria-label="页签整理">
-    <div class="ai-actions"><button id="viewTopic" class="ai-button">按 AI 主题</button><button id="viewDomain" class="ai-button">按网站</button></div>
-    <div class="ai-actions"><button id="manageGroups" class="ai-button">调整分组</button><button id="aiSettings" class="ai-button">模型设置</button><button id="aiRun" class="ai-button primary">整理待分类页签</button><button id="aiCancel" class="ai-button" hidden>取消</button></div>
-    <div class="ai-options">
-      <p id="aiViewHint" class="ai-help">最近访问的排在前面</p>
-      <label class="ai-help ai-auto"><input id="aiAuto" type="checkbox" checked> 新增或跳转后自动分类</label>
-    </div>
-    <details class="ai-guide ai-help">
-      <summary>使用说明</summary>
-      <div id="topicHelp">拖入主题卡片可移动页签；拖到卡片外的空白处松手，会新建分组。手动移动后，AI 不会再调整其归属。</div>
-      <div>页签和分组均按最近访问时间排序。开启自动分类后，新增或跳转的页签会自动整理，已有分组保持不变。</div>
-      <div>AI 分类会将待分类页签的标题和网址、已有主题名称及分组偏好发送到模型设置中的网关。</div>
-    </details>
-    <p id="aiStatus" role="status" aria-atomic="true" hidden></p>
-  </section>
-  <dialog id="groupsDialog" class="ai-dialog">
-    <h2>调整主题分组</h2><p class="ai-help">手动移动的页签固定归属，AI 不会再移动；已有主题保持不变。当前调整在本次浏览器会话内生效。</p>
-    <label>分组<select id="editGroup"></select></label>
-    <label>组名<input id="groupName" maxlength="60"></label>
-    <div class="ai-actions"><button id="renameGroup" class="ai-button">重命名</button><button id="deleteGroup" class="ai-button">删除空组</button><button id="createGroup" class="ai-button">按此名称新建组</button></div>
-    <label>选择要移动的页签<select id="moveTab"></select></label>
-    <label>目标分组<select id="moveTarget"></select></label>
-    <div class="ai-actions"><button id="moveGroupTab" class="ai-button primary">移动并固定归属</button></div>
-    <p id="groupEditStatus" role="status" class="ai-help"></p>
-    <div class="ai-actions"><button id="closeGroupEditor" class="ai-button">完成</button></div>
-  </dialog>
-  <dialog id="aiDialog" class="ai-dialog">
-    <form id="aiForm">
-      <h2>模型设置</h2>
-      <p class="ai-help">兼容 Chat Completions 接口。手动整理或开启自动分类后，会将当前 Chrome 各窗口待分类页签的标题和网址、已有主题名称及分组偏好发送到此网关。只整理本页卡片，不修改浏览器标签组。</p>
-      <label>网关 Base URL<input id="aiBase" type="url" required placeholder="https://api.stepfun.com/step_plan/v1"></label>
-      <label>API Key<input id="aiKey" type="password" autocomplete="off" placeholder="填写 API Key"></label>
-      <p id="aiKeyHint" class="ai-help">Key 仅保存在本扩展的本地存储中。</p>
-      <label>模型名称<input id="aiModel" required placeholder="step-3.7-flash"></label>
-      <label>分组偏好（可选）<textarea id="aiRules" rows="3" placeholder="例如：按工作项目分组，组名使用中文；天问和 Mana 分开。"></textarea></label>
-      <p id="aiFormError" class="ai-error" role="alert"></p>
-      <div class="ai-actions"><button type="button" id="aiForget" class="ai-button">清除 Key</button><button type="button" id="aiDismiss" class="ai-button">取消</button><button type="submit" class="ai-button primary">保存设置</button></div>
-    </form>
-  </dialog>
-
-  <!-- ================================================================
-       TAB OUT DUPES BANNER — appears when you have extra Tab Out tabs open
-       Hidden by default; app.js shows it when dupeTabOutCount > 1
-       ================================================================ -->
-  <div class="tab-cleanup-banner" id="tabOutDupeBanner" style="display:none">
-    <div class="tab-cleanup-left">
-      <div class="tab-cleanup-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75" />
-        </svg>
+  <main class="board-shell">
+    <header class="board-header">
+      <div><h1>Task Out</h1><p id="today" class="board-date"></p></div>
+      <div class="toolbar-actions"><button data-action="settings" aria-label="打开设置"><span aria-hidden="true">⚙</span> 设置</button></div>
+    </header>
+    <section class="board-controls" aria-label="整理与筛选">
+      <div class="control-line">
+        <div class="segmented" aria-label="聚合方式"><button data-grouping="project" class="active">按项目</button><button data-grouping="source">按来源</button></div>
+        <div id="organization-status" class="organization-status" role="status" aria-live="polite">正在读取整理状态…</div>
       </div>
-      <div class="tab-cleanup-text">
-        当前打开了 <strong id="tabOutDupeCount"></strong> 个 Tab Out 页面，只保留当前这个？
+      <div class="control-line secondary-line">
+        <nav id="scopes" class="scope-tabs" aria-label="记录范围"><button data-scope="active" class="active">当前总览</button><button data-scope="recent">最近发起</button><button data-scope="saved">稍后查看</button><button data-scope="archived">已归档</button></nav>
       </div>
-    </div>
-    <button class="tab-cleanup-btn" data-action="close-tabout-dupes">关闭多余页面</button>
-  </div>
-
-  <!-- ================================================================
-       MAIN CONTENT AREA — two-column layout
-       Left: open tabs (domain/mission cards)
-       Right: saved for later checklist
-       The right column only renders when it has items (JS controls this)
-       ================================================================ -->
-  <div class="dashboard-columns" id="dashboardColumns">
-
-    <!-- LEFT COLUMN: 已打开页签 -->
-    <div class="active-section" id="openTabsSection" style="display:none">
-      <div class="section-header">
-        <h2 id="openTabsSectionTitle">当前打开</h2>
-        <div class="section-line"></div>
-        <div class="section-count" id="openTabsSectionCount"></div>
+      <div class="search-line">
+        <label class="search-box"><span aria-hidden="true">⌕</span><input id="query" type="search" placeholder="搜索标题、近况或标签" aria-label="搜索记录"></label>
+        <details class="filter-menu"><summary>筛选</summary><div class="filter-panel">
+        <select id="kind" aria-label="记录类型"><option value="all">全部内容</option><option value="web">网页</option><option value="session">会话</option></select>
+        <select id="source" aria-label="来源"><option value="all">全部来源</option></select>
+        <select id="project" aria-label="项目"><option value="all">全部项目</option></select>
+        <select id="range" aria-label="对话时间" title="按最近更新时间筛选对话，网页全部保留；会话获取范围在连接来源中配置"><option value="3" selected>对话：近 3 天有更新</option><option value="7">对话：近 7 天有更新</option><option value="30">对话：近 30 天有更新</option><option value="0">对话：全部已获取</option></select>
+        <select id="sort" aria-label="排序"><option value="updatedAt">最近活动优先</option><option value="createdAt">最近发起优先</option><option value="title">按标题排序</option></select>
+        <label class="summary-switch"><input id="show-summaries" type="checkbox"> 显示一句近况</label>
+        <button class="quiet" data-action="reset-filters">重置筛选</button>
+        <div id="stats" class="stats-line"></div>
+        </div></details>
       </div>
-      <div class="missions" id="openTabsMissions"></div>
-    </div>
-
-    <!-- RIGHT COLUMN: Saved for Later checklist -->
-    <div class="deferred-column" id="deferredColumn" style="display:none">
-      <div class="section-header">
-        <h2>稍后查看</h2>
-        <div class="section-line"></div>
-        <div class="section-count" id="deferredCount"></div>
-      </div>
-
-      <!-- Active checklist items — injected by renderDeferredList() in app.js -->
-      <div class="deferred-list" id="deferredList"></div>
-
-      <!-- Empty state — shown when no active deferred tabs -->
-      <div class="deferred-empty" id="deferredEmpty" style="display:none">
-        暂无保存的页签。
-      </div>
-
-      <!-- Archive section — collapsed by default -->
-      <div class="deferred-archive" id="deferredArchive" style="display:none">
-        <button class="archive-toggle" id="archiveToggle">
-          <svg class="archive-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
-          已完成
-          <span class="archive-count" id="archiveCount"></span>
-        </button>
-        <div class="archive-body" id="archiveBody" style="display:none">
-          <input type="text" class="archive-search" id="archiveSearch" placeholder="搜索已完成的页签…">
-          <div class="archive-list" id="archiveList"></div>
-        </div>
-      </div>
-    </div>
-
-  </div><!-- end .dashboard-columns -->
-
-  <!-- ================================================================
-       FOOTER — global stats + refresh control
-       ================================================================ -->
-  <footer>
-    <div class="footer-stats">
-      <div class="stat">
-        <div class="stat-num" id="statTabs">—</div>
-        <div class="stat-label">已打开页签</div>
-      </div>
-    </div>
-    <div class="last-refresh">
-      <span style="color: var(--muted); font-size: 11px;"><a href="https://github.com/zarazhangrui/tab-out" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Tab Out</a> · 作者 <a href="https://x.com/zarazhangrui" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Zara</a></span>
-    </div>
-  </footer>
-
-</div><!-- end .container -->
-
-<!-- ================================================================
-     TOAST — floats above everything, used for action confirmations
-     Hidden by default via CSS (opacity:0, translateY)
-     ================================================================ -->
-<div class="toast" id="toast">
-  <!-- Checkmark circle icon (Heroicons outline) -->
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-  </svg>
-  <span id="toastText"></span>
-</div>
-
-<!-- Personal config (gitignored) — defines LOCAL_LANDING_PAGE_PATTERNS etc. -->
-<!-- If the file doesn't exist, that's fine — app.js uses sensible defaults. -->
-<script src="config.local.js" onerror="/* no personal config, that's fine */"></script>
-
-<!-- Main dashboard logic — loads last so the DOM is ready -->
-<script src="ai.js"></script>
-<script src="app.js"></script>
-<script src="ai-ui.js"></script>
-<script src="group-editor.js"></script>
-<script src="drag-groups.js"></script>
+      <p id="view-hint" class="view-hint">近 3 天有更新的对话 · 全部已打开网页，时间筛选只影响对话</p>
+      <div id="tags" class="tags-line" aria-label="类型标签"></div>
+      <div id="migration" hidden></div>
+      <div id="preview-notice" class="notice" hidden>当前是浏览器预览，可导入标准数据查看。安装 Chrome 扩展后可管理页签、保存整理结果和连接本机会话；预览数据仅在本页临时保存。</div>
+    </section>
+    <section class="board-content" aria-label="工作记录">
+      <div class="section-heading"><h2 id="scope-title">当前总览</h2><div class="section-rule"></div><span id="item-count"></span></div>
+      <div id="board" class="project-grid" aria-live="polite"></div>
+    </section>
+    <footer class="board-footer"><span class="footer-brand">Task Out</span><span>给正在进行的事，一个清楚的位置。</span><span id="connection-state" class="connection-state" role="status">正在读取…</span></footer>
+  </main>
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <dialog id="detail" class="detail-dialog" aria-labelledby="detail-title"></dialog>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

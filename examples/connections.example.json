@@ -1,0 +1,7 @@
+{
+  "description": "配置示例；请将 root 替换为你自己的绝对数据目录，再通过连接与来源添加。historyDays 仅允许 3、7、30，默认 30；metadataRoot 可留空，读取名称时再显式选择名称资料目录。不要提交个人配置和运行数据。",
+  "connections": [
+    { "connectorId": "codex-rollout", "name": "我的编程会话", "root": "/replace-with-your-directory/sessions", "metadataRoot": "", "historyDays": 30, "pollIntervalMs": 60000, "enabled": false, "allowAI": false, "includeSummary": false, "includeNaming": false },
+    { "connectorId": "claude-jsonl", "name": "兼容 SDK 会话", "root": "/replace-with-your-directory/projects", "historyDays": 30, "pollIntervalMs": 60000, "enabled": false, "allowAI": false, "includeSummary": false, "includeNaming": false }
+  ]
+}

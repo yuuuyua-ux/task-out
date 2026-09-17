@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>Task Out</title>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#5145CD"/>
+  <rect x="28" y="24" width="64" height="80" rx="12" fill="#FFFFFF"/>
+  <path d="M40 42H76M40 58H65M40 74H54" fill="none" stroke="#5145CD" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="88" cy="88" r="26" fill="#F59E0B"/>
+  <path d="M76 88L84 96L101 78" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

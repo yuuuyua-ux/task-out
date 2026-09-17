@@ -1,0 +1,16 @@
+{
+  "name": "task-out",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Local-first browser and agent conversation workspace",
+  "engines": {"node": ">=24.12.0 <25"},
+  "scripts": {
+    "start": "node scripts/start.mjs",
+    "stop": "node scripts/start.mjs --stop",
+    "restart": "node scripts/start.mjs --restart",
+    "service:foreground": "node scripts/start.mjs --foreground",
+    "test": "node --test tests/*.test.cjs",
+    "check": "node scripts/check.mjs"
+  },
+  "license": "MIT"
+}

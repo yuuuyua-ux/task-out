@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Task Out",
-  "version": "1.1.0",
-  "description": "集中查看浏览器页签，支持按网站或 AI 主题整理，以及手动保存到稍后查看。",
+  "version": "2.0.0",
+  "description": "按项目集中查看网页与兼容 Agent 会话，支持可配置来源、进展、归档和模型辅助整理。",
   "permissions": [
     "tabs",
     "activeTab",
@@ -18,16 +18,19 @@
   "action": {
     "default_title": "Task Out",
     "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png"
+      "16": "icons/task-out16.png",
+      "32": "icons/task-out32.png",
+      "48": "icons/task-out48.png"
     }
   },
   "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
+    "16": "icons/task-out16.png",
+    "32": "icons/task-out32.png",
+    "48": "icons/task-out48.png",
+    "128": "icons/task-out128.png"
   },
   "optional_host_permissions": [
-    "https://*/*"
+    "https://*/*",
+    "http://*/*"
   ]
 }

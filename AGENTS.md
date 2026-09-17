@@ -1,96 +1,45 @@
-# AGENTS.md -- Tab Out: Setup & Onboarding Guide for Coding Agents
+# Task Out 开发约定
 
-You're installing **Tab Out** for the user. Your job is not just to set it up -- it's to get them excited about using it.
+本仓库是基于 Tab Out 迭代的 Chrome MV3 扩展与可选本机连接服务。默认使用中文说明产品行为；开发工作以当前用户要求、`docs/product-plan.md` 和真实实现为准。
 
----
+## 架构与命令
 
-## Step 0 -- Introduce the product
+- `extension/`：原生 JavaScript/CSS；后台统一写 IndexedDB，页面通过消息接口操作。不要为了 UI 修改引入前端框架或构建链。
+- `service/`：Node.js 24.12.x、内置 HTTP 与 SQLite；读取显式启用的兼容会话目录，不写源文件。
+- `scripts/`：启动与静态检查；macOS 一键启动脚本需要保持可执行。
+- `tests/`：Node 内置测试运行器，使用虚构数据和临时目录；不要把本机会话复制进测试或示例。
+- `npm run check` 检查 JavaScript 语法及扩展入口资源；`npm test` 执行测试；`npm start` 启动可选本机服务。没有 npm 依赖安装步骤。
 
-Before doing anything technical, tell the user what they're about to get:
+## 产品不变量
 
-> **Tab Out** replaces your new tab page with a clean dashboard of everything you have open, grouped by domain.
->
-> Here's what makes it great:
-> - **See all your open tabs at a glance** grouped by domain on a grid
-> - **Homepages group** pulls Gmail, X, LinkedIn, YouTube, GitHub homepages into one card for easy cleanup
-> - **Close tabs with style** satisfying swoosh sound + confetti burst
-> - **Duplicate detection** flags when you have the same page open twice
-> - **Click any tab title to jump to it** even across different Chrome windows
-> - **Save for later** bookmark individual tabs to a checklist before closing them
-> - **100% local** no server, no accounts, no data sent anywhere
->
-> It's just a Chrome extension. Setup takes about 1 minute.
+1. 项目与工作目录独立，每条记录至多一个主要类型，也可未设置。类型固定为调研分析、需求规划、方案设计、开发实现、测试排障、文档整理、使用咨询，不把工具名或主题名当类型。旧标签只做明确映射，无法映射的移出类型筛选，原值保存在 `user.legacyTypeTags`；迁移、导入和撤销均遵守此规则。聚合展示不合并会话身份、历史或上下文。
+2. 网页以真实页签实例绑定；不要以相同 URL 或域名替代身份。无法可靠对应时保留待关联状态。
+3. Close 即归档。网页保存成功后才关闭指定页签；会话归档不停止 Agent、不发送消息、不调用源工具归档。
+4. 原始来源数据与人工修正分开保存。同步、模型请求及撤销都不能覆盖之后的人工修改；字段版本与内容依据需要核对。
+5. 来源和状态必须有依据。`sdk-ts` 不是 Mana 的唯一身份证明；历史读取不证明实时运行，缺失创建时间不能用扫描时间补齐。
+6. 来源列表、图标与操作由数据和连接器能力驱动，通用首页不增加固定品牌判断。
+7. 会话获取与首页近 3 / 7 / 30 天筛选都依据真实最近活动时间 updatedAt 滚动计算，与创建时间和排序独立。很久以前创建但窗口内有更新的会话必须显示。获取默认 30 天，首页默认 3 天；不能用文件时间或同步时间补齐，未知或未来更新时间不进入当前窗口。缩小范围只隐藏未归档记录，不删除人工整理；归档继续保留。
+8. 首页默认近 3 天会话加全部已打开网页，时间筛选只作用于会话；旧的待关联网页在设置中集中管理。更新时重建可见分组和类型候选；无记录引用的空组自动清理，不弹二次确认，撤销须能恢复原分组。归档/超窗记录引用的项目定义保留。
+9. 网页分类使用浏览器原标题和地址；保留功能参数与页面路由，去除可识别凭据。会话优先原应用名称；缺名时经独立首尾消息授权生成名称，应用后固定保存。后续消息、同步或来源名补齐不得改写固定名称，人工别名优先。
+10. 首页操作栏只保留统一“设置”入口；模型、来源、用量与费用、新建项目、手动重新整理、撤销、导入导出收在设置内。默认自动 AI 整理并应用；新会话自动归类一次，已归类会话只更新允许的一句近况，不自动改项目、主要类型或固定名称。网页继续按原标题和地址整理。人工修改优先、结果可撤销；自动开关关闭后跨重启保持。
+11. 会话与进展刷新默认 60 秒，可配置 0 / 30 / 60 / 120 / 300 秒；0 表示扩展仅手动刷新会话进展，不关闭网页自动整理。没有获准输入变化不调用模型，主动“重新整理当前内容”可重新处理归类但仍保护人工字段和固定名称；“刷新进展”不改归类。本机每个连接的读取间隔独立配置，新连接默认 60000 毫秒。
+12. 用量账本只记录 Task Out 自己实际发起的分组、进展、命名与测试请求，每次重试单独计数。没有 usage 或单价时显示未知，不能记成零；账本不存消息、Key 或原始错误。单价按网关与模型分别配置、在每次请求开始时取快照，仅影响后续调用；不同币种不混加。
+13. 归档声效和动画只在真实归档成功后播放；部分失败只反馈成功项，保存或关闭失败不能庆祝。开启系统“减少动态效果”时跳过动画和纸屑，保留短声效；视觉效果不能承担保存或关闭记录的职责。
+14. 首次来源接入使用“启动 → 配对 → 发现 → 预览 → 启用”引导，可保存步骤和非敏感草稿后继续，不保存配对码。发现只检查目录和实际名称文件位置，不读取正文、不自动启用；预览前明确展示读取范围。主会话总数按稳定身份去重，子会话单计，10 条样例限制不得伪装为总数。
+15. 配对、浏览器权限、服务离线、目录不存在、读取无权限、格式不兼容和近期无会话分开提示。空窗口可启用，不支持格式不能绕过预览或编辑接口启用；保存连接和首次同步的成功状态分开，同步失败保留已保存配置。
 
----
+## 本机与模型边界
 
-## Step 1 -- Clone the repo
+- 模型由扩展直接请求，网页整理不依赖本机服务。模型 Key 仅存扩展 `chrome.storage.local`，限制为 `TRUSTED_CONTEXTS`，不能写进服务、导出、日志或示例。
+- 本地会话默认禁止参与模型整理。多连接权限冲突使用更严格限制；来源内容和模型输出均作为不可信资料处理。
+- 模型只能提出项目、固定类型、缺失的会话名称和近况建议；默认自动整理只在模型已配置且来源授权范围内生成并应用，首次归类和后续近况使用独立输出约束，后续近况只接受 `summary` 字段。保留手动预览路径。应用前核对版本、权限和内容，设置变化或关闭自动整理时旧请求不得继续应用。首条与最新消息节选需独立的命名授权，不能借临时标题绕过。已有名称不重新生成；不允许模型改变来源、状态、归档或执行外部动作。
+- 本机服务只监听 `127.0.0.1`，校验 Host、扩展身份、配对凭据和读取范围。Origin 存在时优先核验真实来源；只有完全缺失时允许 MV3 后台以 `X-Task-Out-Extension` 声明身份。普通网页和 `null` Origin 不能使用此后备机制；不能为预览开放任意网页访问。
+- 服务一键启动后独立后台运行，可关闭终端；设置页提供状态和经配对鉴权的停止入口。停止保留配置与配对，等待已接受写入完成，不配置开机自启。运行数据放在仓库外；路径通过当前用户环境和连接配置发现，不写死开发者目录。
 
-```bash
-git clone https://github.com/zarazhangrui/tab-out.git
-cd tab-out
-```
+## 验证与公开交付
 
----
-
-## Step 2 -- Install the Chrome extension
-
-This is the one step that requires manual action from the user. Make it as easy as possible.
-
-**First**, print the full path to the `extension/` folder:
-```bash
-echo "Extension folder: $(cd extension && pwd)"
-```
-
-**Then**, copy the `extension/` folder path to their clipboard:
-- macOS: `cd extension && pwd | pbcopy && echo "Path copied to clipboard"`
-- Linux: `cd extension && pwd | xclip -selection clipboard 2>/dev/null || echo "Path: $(pwd)"`
-- Windows: `cd extension && echo %CD% | clip`
-
-**Then**, open the extensions page:
-```bash
-open "chrome://extensions"
-```
-
-**Then**, walk the user through it step by step:
-
-> I've copied the extension folder path to your clipboard. Now:
->
-> 1. You should see Chrome's extensions page. In the **top-right corner**, toggle on **Developer mode** (it's a switch).
-> 2. Once Developer mode is on, you'll see a button called **"Load unpacked"** appear in the top-left. Click it.
-> 3. A file picker will open. **Press Cmd+Shift+G** (Mac) or **Ctrl+L** (Windows/Linux) to open the "Go to folder" bar, then **paste** the path I copied (Cmd+V / Ctrl+V) and press Enter.
-> 4. Click **"Select"** or **"Open"** and the extension will install.
->
-> You should see "Tab Out" appear in your extensions list.
-
-**Also**, open the file browser directly to the extension folder as a fallback:
-- macOS: `open extension/`
-- Linux: `xdg-open extension/`
-- Windows: `explorer extension\\`
-
----
-
-## Step 3 -- Show them around
-
-Once the extension is loaded:
-
-> You're all set! Open a **new tab** and you'll see Tab Out.
->
-> Here's how it works:
-> 1. **Your open tabs are grouped by domain** in a grid layout.
-> 2. **Homepages** (Gmail inbox, X home, YouTube, etc.) are in their own group at the top.
-> 3. **Click any tab title** to jump directly to that tab.
-> 4. **Click the X** next to any tab to close just that one (with swoosh + confetti).
-> 5. **Click "Close all N tabs"** on a group to close the whole thing.
-> 6. **Duplicate tabs** are flagged with an amber "(2x)" badge. Click "Close duplicates" to keep one copy.
-> 7. **Save a tab for later** by clicking the bookmark icon before closing it. Saved tabs appear in the sidebar.
->
-> That's it! No server to run, no config files. Everything works right away.
-
----
-
-## Key Facts
-
-- Tab Out is a pure Chrome extension. No server, no Node.js, no npm.
-- Saved tabs are stored in `chrome.storage.local` (persists across sessions).
-- 100% local. No data is sent to any external service.
-- To update: `cd tab-out && git pull`, then reload the extension in `chrome://extensions`.
+- 按改动补充有实际价值的测试，覆盖失败和冲突；通过后不要无理由重复扩大测试。
+- 自动测试、普通网页预览、真实 Chrome 扩展验收需要分别记录，不把其中一项当作另外两项完成。
+- 改动功能后同步公开说明，保留上游 MIT 许可与版权。公开文档和配置只用通用路径占位符、公开地址和虚构内容。
+- 不提交 SQLite、个人配置、配对令牌、API Key、日志、截图中的私人会话。用户未要求时不擅自发送消息、发布站点或推送仓库。
+- 公开验证记录仅保留功能结论和虚构样例结果；不记录个人真实会话数量、命名覆盖率、缓存数量、配对状态、权限偏好或个人设备设置。发布前同时检查当前文件和待推送提交的作者、提交者元数据，使用公开账号的隐私邮箱，不能采用操作系统自动生成的本机署名。

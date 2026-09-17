@@ -1,6 +1,10 @@
 node_modules/
 *.log
 *.db
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.task-out/
 .DS_Store
 docs/superpowers/
 
