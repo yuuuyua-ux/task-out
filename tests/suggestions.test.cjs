@@ -37,8 +37,8 @@ test('exports a browser global without any browser API or storage dependency', (
 });
 
 test('configuration has no vendor default or credential return and accepts local compatible models', () => {
-  assert.deepEqual(Suggestions.normalizeConfig(), { baseUrl: '', model: '', rules: '', autoSuggest: false, autoOrganize: true });
-  assert.deepEqual(Suggestions.normalizeConfig({ ...config, apiKey: 'SECRET', extra: 'ignored' }), { ...config, autoSuggest: false, autoOrganize: true });
+  assert.deepEqual(Suggestions.normalizeConfig(), { baseUrl: '', model: '', rules: '', maxGroups: 5, autoSuggest: false, autoOrganize: true });
+  assert.deepEqual(Suggestions.normalizeConfig({ ...config, apiKey: 'SECRET', extra: 'ignored' }), { ...config, maxGroups: 5, autoSuggest: false, autoOrganize: true });
   assert.equal(Suggestions.normalizeConfig({ autoOrganize: false, autoSuggest: true }).autoOrganize, false);
   assert.equal(Suggestions.normalizeConfig({ autoSuggest: true }).autoSuggest, true);
   assert.equal(Suggestions.endpoint(' https://models.example/v1/chat/completions/// '), 'https://models.example/v1');
@@ -215,6 +215,76 @@ test('requests split into 20-record batches and retain independent revisions', a
   assert.equal(result.suggestions.length, 43);
   assert.equal(new Set(result.suggestions.map(item => item.id)).size, 43);
   assert.deepEqual(result.suggestions.map(item => item.revision), items.map(item => item.revision));
+});
+
+test('confirmed output truncation splits at most twice without parsing or resending the truncated answer', async () => {
+  const items = Array.from({length: 20}, (_, n) => web('split-' + n, {revision: n})), sizes = [];
+  const result = await Suggestions.run({items, projects, config, fetchImpl: async (_url, options) => {
+    assert.equal(options.body.includes('NEVER_REPLAY_TRUNCATED'), false);
+    const input = inputOf({options}); sizes.push(input.records.length);
+    if (input.records.length > 5) return reply('NEVER_REPLAY_TRUNCATED {"suggestions":', 'length');
+    return reply({suggestions: input.records.map(item => suggestion(item.id))});
+  }});
+  assert.deepEqual(sizes, [20, 10, 5, 5, 10, 5, 5]);
+  assert.deepEqual(result.suggestions.map(item => item.recordId), items.map(item => item.id));
+  assert.deepEqual(result.suggestions.map(item => item.revision), items.map(item => item.revision));
+});
+
+test('a single record or exhausted split depth reports the current batch failure and stops paying for siblings', async () => {
+  for (const [count, expected] of [[1, [1]], [5, [5, 3, 2]], [20, [20, 10, 5]]]) {
+    const sizes = [];
+    await assert.rejects(() => Suggestions.run({items: Array.from({length: count}, (_, n) => web('limit-' + n)), projects, config,
+      fetchImpl: async (_url, options) => {sizes.push(inputOf({options}).records.length); return reply('CUT_PRIVATE_OUTPUT', 'length');}}),
+    error => error.code === 'MODEL_OUTPUT_LENGTH' && /当前批次未应用/.test(error.message) && !error.message.includes('CUT_PRIVATE_OUTPUT'));
+    assert.deepEqual(sizes, expected);
+  }
+});
+
+test('splitting never weakens validation, retries other failures, or returns a successful sibling after a failure', async () => {
+  for (const invalid of [reply('invalid JSON'), reply({suggestions: [suggestion('not-in-request')]}), {ok: false, status: 429}]) {
+    let calls = 0;
+    await assert.rejects(() => Suggestions.run({items: [web('a'), web('b')], projects, config, fetchImpl: async () => {calls++; return invalid;}}));
+    assert.equal(calls, 1);
+  }
+  let calls = 0;
+  const items = [web('a'), web('b')];
+  await assert.rejects(() => Suggestions.run({items, projects, config, fetchImpl: async (_url, options) => {
+    calls++;
+    if (calls === 1) return reply('truncated', 'length');
+    return calls === 2 ? reply({suggestions: inputOf({options}).records.map(item => suggestion(item.id))}) : reply({suggestions: [suggestion('b', {archived: true})]});
+  }}));
+  assert.equal(calls, 3); assert.equal(items.every(item => item.projectId === null), true);
+});
+
+test('split retries keep the original deadline and cancellation prevents starting a child request', async () => {
+  const controller = new AbortController(); let calls = 0;
+  await assert.rejects(() => Suggestions.run({items: [web('a'), web('b')], projects, config, signal: controller.signal,
+    onUsage: () => controller.abort(), fetchImpl: async () => {calls++; return reply('truncated', 'length');}}), {name: 'AbortError'});
+  assert.equal(calls, 1);
+  let fireTimeout, timers = 0, cleared = 0;
+  const context = {URL, AbortController, DOMException, setTimeout(fn, delay) {assert.equal(delay, 120000); timers++; fireTimeout = fn; return 1;}, clearTimeout() {cleared++;}};
+  vm.createContext(context); vm.runInContext(fs.readFileSync('extension/suggestions.js', 'utf8'), context);
+  let requests = 0;
+  await assert.rejects(() => context.TaskOutSuggestions.run({items: [web('a'), web('b')], projects, config, fetchImpl: async () => {
+    requests++; if (requests === 1) return reply('truncated', 'length'); fireTimeout(); return new Promise(() => {});
+  }}), {name: 'TimeoutError'});
+  assert.equal(requests, 2); assert.equal(timers, 1); assert.equal(cleared, 1);
+});
+
+test('records that expire while a truncated response is in flight are excluded before any split retry', async () => {
+  let now = 1000, calls = 0;
+  class Clock extends Date {static now() {return now;}}
+  const context = {URL, AbortController, DOMException, setTimeout, clearTimeout, Date: Clock};
+  vm.createContext(context); vm.runInContext(fs.readFileSync('extension/suggestions.js', 'utf8'), context);
+  const result = await context.TaskOutSuggestions.run({items: [web('expired', {historyExpiresAt: 1100}), web('a'), web('b')], projects, config,
+    fetchImpl: async (_url, options) => {
+      calls++; if (calls === 1) {now = 1200; return reply('truncated', 'length');}
+      const input = inputOf({options}); assert.equal(input.records.some(item => item.id === 'expired'), false);
+      return reply({suggestions: input.records.map(item => suggestion(item.id))});
+    }});
+  assert.equal(calls, 3);
+  assert.deepEqual(Array.from(result.suggestions, item => item.recordId), ['a', 'b']);
+  assert.deepEqual(Array.from(result.excluded, item => item.id), ['expired']);
 });
 
 test('a failure in a later batch rejects the complete run without partial results', async () => {

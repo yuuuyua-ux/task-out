@@ -36,7 +36,7 @@ test('session naming skips known leading envelopes and retains the real request 
   assert.equal(record.firstMessage, '比较任务看板方案');
   assert.equal(record.latestMessage, '比较完成，已整理差异');
   assert.equal(record.title, '比较任务看板方案');
-  assert.equal(record.namingVersion, 2);
+  assert.equal(record.namingVersion, 3);
 });
 
 test('naming cleanup preserves quoted tags and code instead of interpreting ordinary documentation as an envelope', async () => {
@@ -72,13 +72,13 @@ test('version 1 cursor and stored record are repaired without new activity or lo
   cursor.state.timeline.push({ role: 'user', text: wrapper, at: NOW - 500 });
   const repaired = (await fixture.read()).records[0];
   assert.equal(repaired.firstMessage, '真正的首条请求'); assert.equal(repaired.latestMessage, '最近的结果');
-  assert.equal(repaired.updatedAt, original.updatedAt); assert.equal(repaired.namingVersion, 2);
+  assert.equal(repaired.updatedAt, original.updatedAt); assert.equal(repaired.namingVersion, 3);
   const { Store } = await import('../service/store.mjs');
   const store = new Store(path.join(fixture.root, 'cache')); t.after(() => store.close());
   store.mergeRecord({ ...original, namingVersion: 1, firstMessage: wrapper, latestMessage: wrapper, title: wrapper, timeline: [...original.timeline, { role: 'user', text: wrapper, at: NOW - 500 }] });
   const merged = store.mergeRecord(repaired);
   assert.equal(merged.firstMessage, '真正的首条请求'); assert.equal(merged.latestMessage, '最近的结果');
-  assert.equal(merged.title, '真正的首条请求'); assert.equal(merged.namingVersion, 2);
+  assert.equal(merged.title, '真正的首条请求'); assert.equal(merged.namingVersion, 3);
   store.put('records', { ...merged, sourceTitle: '保留正式名称', title: '保留正式名称', titleBasis: 'codex-index' });
   assert.equal(store.mergeRecord(repaired).title, '保留正式名称');
 });
@@ -108,10 +108,88 @@ test('a bounded prefix that cannot reach the first message clears old wrappers a
   assert.equal(repaired.firstMessage, ''); assert.equal(repaired.title, '未命名会话');
   assert.equal([...fixture.cursors.values()][0].state.preventFirstMessageCapture, true);
   await fs.appendFile(fixture.file, lines([user('后来追加的请求', -500)]));
-  assert.equal((await fixture.read()).records[0].firstMessage, '');
+  const appended = (await fixture.read()).records[0];
+  assert.equal(appended.firstMessage, ''); assert.equal(appended.title, '未命名会话');
   const { Store } = await import('../service/store.mjs');
   const store = new Store(path.join(fixture.root, 'cache')); t.after(() => store.close());
   store.mergeRecord({ ...original, namingVersion: 1, firstMessage: wrapper, title: wrapper });
   const merged = store.mergeRecord(repaired);
   assert.equal(merged.firstMessage, ''); assert.equal(merged.title, '未命名会话');
+});
+
+test('request envelopes unwrap while nested context, empty and incomplete envelopes stay out of naming', async () => {
+  const { meaningfulMessage } = await import('../service/connectors/message-text.mjs');
+  const examples = [
+    ['<current_user_request>比较虚构方案</current_user_request>', '比较虚构方案'],
+    ['<command-name>/fixture</command-name><command-message>上下文</command-message><command-args>比较虚构方案</command-args>', '比较虚构方案'],
+    ['<interrupted_turn_context>旧内容<interrupted_turn_context>内层</interrupted_turn_context>旧补充</interrupted_turn_context><current_user_request>新请求</current_user_request>', '新请求'],
+    ['<current_user_request><interrupted_turn_context>忽略</interrupted_turn_context><command-args>真实请求</command-args></current_user_request>', '真实请求'],
+    ['<current_user_request><current_user_request>嵌套请求</current_user_request></current_user_request>', '嵌套请求'],
+    ['<current_user_request mode="fixture">请求一</current_user_request><interrupted_turn_context>上下文</interrupted_turn_context><command-args>请求二</command-args>', '请求一 请求二'],
+    ['<interrupted_turn_context/><current_user_request></current_user_request><command-args/>', ''],
+    ['<interrupted_turn_context>未闭合的上下文', ''],
+    ['<current_user_request>未闭合的请求', ''],
+    ['<current_user_request><command-args>内层缺少结尾</current_user_request>', ''],
+    ['<current_user_request><current_user_request>只有内层闭合</current_user_request>', ''],
+  ];
+  for (const [input, expected] of examples) assert.equal(meaningfulMessage('user', input), expected);
+});
+
+test('request-like tags in prose, quoted examples, fenced code and assistant messages remain content', async () => {
+  const { meaningfulMessage } = await import('../service/connectors/message-text.mjs');
+  for (const input of [
+    '请解释 <current_user_request>示例</current_user_request> 与 <command-args>参数</command-args>',
+    '> <current_user_request>引用请求</current_user_request>',
+    '```xml\n<command-args>代码示例</command-args>\n```',
+    '<unknown_wrapper><current_user_request>普通内容</current_user_request></unknown_wrapper>',
+  ]) assert.equal(meaningfulMessage('user', input), input.replace(/\s+/g, ' '));
+  const code = '```xml\n</current_user_request>\n```';
+  assert.equal(meaningfulMessage('user', `<current_user_request>${code}</current_user_request>`), code.replace(/\s+/g, ' '));
+  for (const tag of ['interrupted_turn_context', 'current_user_request', 'command-args']) {
+    const input = `<${tag}>助手正文</${tag}>`;
+    assert.equal(meaningfulMessage('assistant', input), input);
+  }
+});
+
+test('an incomplete first request never gives a later message its first-message identity or fallback title', async t => {
+  const fixture = await setup(t, [meta, user('<current_user_request>首条请求缺少闭合'), user('后续请求', -3000), assistant('最近结果')]);
+  const record = (await fixture.read()).records[0];
+  assert.equal(record.firstMessage, ''); assert.equal(record.title, '未命名会话');
+  assert.equal(record.latestMessage, '最近结果');
+  await fs.appendFile(fixture.file, lines([user('再次追加', -500)]));
+  const next = (await fixture.read()).records[0];
+  assert.equal(next.firstMessage, ''); assert.equal(next.title, '未命名会话');
+});
+
+test('version 2 cursors and cached records repair wrapped first/latest requests without appends, preserving identity and native names', async t => {
+  const { Store } = await import('../service/store.mjs');
+  for (const connectorId of ['codex-rollout', 'claude-jsonl']) for (const named of [false, true]) {
+    const firstRaw = '<interrupted_turn_context>中断上下文</interrupted_turn_context><current_user_request>真正的首条任务</current_user_request>';
+    const latestRaw = '<command-name>/fixture</command-name><command-args>任务最新补充</command-args>';
+    const entry = (text, offset) => connectorId === 'codex-rollout' ? user(text, offset) : {type: 'user', sessionId: ID, timestamp: stamp(offset), message: {role: 'user', content: text}};
+    const entries = [...(connectorId === 'codex-rollout' ? [meta] : []), entry(firstRaw, -4000), entry(latestRaw, -1000)];
+    if (named && connectorId === 'claude-jsonl') entries.push({type: 'custom-title', sessionId: ID, customTitle: '原应用固定名称', timestamp: stamp(-500)});
+    const fixture = await setup(t, entries, connectorId);
+    if (named && connectorId === 'codex-rollout') {
+      const metadataRoot = path.join(fixture.root, 'metadata'); await fs.mkdir(metadataRoot);
+      await fs.writeFile(path.join(metadataRoot, 'session_index.jsonl'), lines([{id: ID, thread_name: '原应用固定名称', updated_at: stamp(-500)}]));
+      Object.assign(fixture.connection, {metadataRoot, canonicalMetadataRoot: metadataRoot});
+    }
+    const original = (await fixture.read()).records[0], beforeFile = await fs.stat(fixture.file);
+    const cursor = [...fixture.cursors.values()][0], offset = cursor.offset;
+    Object.assign(cursor.state, {namingVersion: 2, firstMessage: firstRaw, title: named ? original.title : firstRaw, latestMessage: latestRaw});
+    cursor.state.timeline = [{role: 'user', at: NOW - 4000, text: firstRaw}, {role: 'user', at: NOW - 1000, text: latestRaw}];
+    const store = new Store(path.join(fixture.root, 'cache')); t.after(() => store.close());
+    store.mergeRecord({...original, namingVersion: 2, firstMessage: firstRaw, title: named ? original.title : firstRaw, latestMessage: latestRaw});
+    const repaired = (await fixture.read()).records[0], merged = store.mergeRecord(repaired);
+    for (const record of [repaired, merged]) {
+      assert.equal(record.firstMessage, '真正的首条任务'); assert.equal(record.latestMessage, '任务最新补充');
+      assert.equal(record.title, named ? '原应用固定名称' : '真正的首条任务');
+      assert.equal(record.sourceTitle, original.sourceTitle); assert.equal(record.namingVersion, 3);
+      assert.equal(record.id, original.id); assert.equal(record.updatedAt, original.updatedAt); assert.equal(record.createdAt, original.createdAt);
+    }
+    assert.equal([...fixture.cursors.values()][0].offset, offset);
+    assert.equal((await fs.stat(fixture.file)).mtimeMs, beforeFile.mtimeMs);
+    assert.equal((await fixture.read()).records[0].title, merged.title);
+  }
 });

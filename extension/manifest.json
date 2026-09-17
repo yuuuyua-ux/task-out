@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Task Out",
-  "version": "2.0.1",
+  "version": "2.0.3",
   "description": "按项目集中查看网页与兼容 Agent 会话，支持可配置来源、进展、归档和模型辅助整理。",
   "permissions": [
     "tabs",

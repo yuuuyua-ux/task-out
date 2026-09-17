@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { listJSONL, readJSONL, within } from './jsonl.mjs';
 import { readCodexNames } from './codex-names.mjs';
-import { meaningfulMessage } from './message-text.mjs';
+import { meaningfulMessage, messageContent } from './message-text.mjs';
 import { HISTORY_DAYS, historyDays, inHistory } from '../history.mjs';
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -27,11 +27,14 @@ function activity(state, stamp) {
   return at;
 }
 function message(state, role, text, stamp) {
-  const cleaned = meaningfulMessage(role, text);
+  const {text: cleaned, incompleteRequest} = messageContent(role, text);
+  // An incomplete actual request is not an empty context envelope. Keep its
+  // missing first-message basis unknown instead of promoting a later turn.
+  if (role === 'user' && !cleaned && incompleteRequest && !state.firstMessage) state.preventFirstMessageCapture = true;
   if (!cleaned) return;
   const at = activity(state, stamp);
   // Do not use inherited system/developer instructions as a session's title.
-  if (role === 'user' && !state.title) state.title = cut(cleaned, 120);
+  if (role === 'user' && !state.title && !state.preventFirstMessageCapture) state.title = cut(cleaned, 120);
   if (role === 'user' && !state.firstMessage && !state.preventFirstMessageCapture) state.firstMessage = cleaned;
   state.latestMessage = cleaned;
   if (role === 'assistant') state.summary = cut(cleaned, 500);
@@ -40,7 +43,7 @@ function message(state, role, text, stamp) {
   state.timeline.push({ role, text: cleaned, at });
   if (state.timeline.length > 60) state.timeline.shift();
 }
-const NAMING_VERSION = 2;
+const NAMING_VERSION = 3;
 const empty = () => ({ namingVersion: NAMING_VERSION, title: '', sourceTitle: '', sourceTitleSeen: false, firstMessage: '', latestMessage: '', summary: '', created: null, createdAtBasis: 'unknown', earliest: null, latest: null, timeline: [], metadataFound: false, entrypoints: [], clientNames: [] });
 
 function codexReducer(expectedId) {

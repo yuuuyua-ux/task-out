@@ -215,3 +215,62 @@ test('connection tests forward the request snapshot hook before classification f
   assert.equal(events.length, 1); assert.equal(events[0].id, starts[0].id); assert.equal(events[0].at, starts[0].at);
   assert.equal(events[0].purpose, 'test');
 });
+
+test('every truncated parent, split child and project repair has its own usage count and request-price snapshot', async () => {
+  for (const lengthFirst of [true, false]) {
+  const starts = [], events = [], prices = [], snapshots = new Map(); let calls = 0, price = 1;
+  const result = await S.run({items: [web('a'), web('b')], projects: [{id: 'project', name: '示例项目'}], config,
+    onRequest: event => {starts.push(event); snapshots.set(event.id, price);},
+    onUsage: event => {events.push(event); prices.push(snapshots.get(event.id));},
+    fetchImpl: async (_url, options) => {
+      calls++; price++; const input = inputOf(options);
+      if (calls === (lengthFirst ? 1 : 2)) return response([], {prompt_tokens: 8, completion_tokens: 8192, total_tokens: 8200}, {finish_reason: 'length'});
+      return response(input.records.map(item => patch(item.id, {projectId: calls === (lengthFirst ? 2 : 1) ? 'INVALID_PROJECT' : input.projects[0].id})), {total_tokens: 10});
+    }});
+  assert.equal(result.suggestions.length, 2); assert.equal(calls, 4);
+  assert.deepEqual(events.map(event => event.recordCount), lengthFirst ? [2, 1, 1, 1] : [2, 2, 1, 1]);
+  assert.deepEqual(events.map(event => event.attempt), [1, 2, 3, 4]);
+  assert.deepEqual(events.map(event => event.totalTokens), lengthFirst ? [8200, 10, 10, 10] : [10, 8200, 10, 10]);
+  assert.deepEqual(prices, [1, 2, 3, 4]);
+  assert.equal(new Set(events.map(event => event.id)).size, 4);
+  assert.deepEqual(events.map(event => event.id), starts.map(event => event.id));
+  }
+});
+
+test('length splitting preserves progress-only and naming-only contracts and required names', async () => {
+  for (const namingOnly of [false, true]) {
+    const items = ['a', 'b'].map(id => session(id, {sourceTitle: '', titleBasis: 'first-message', needsSessionName: true,
+      firstMessage: '虚构请求', latestMessage: '虚构结果'}));
+    const events = []; let calls = 0;
+    const result = await S.run({items, config, namingOnly, progressOnly: !namingOnly, onUsage: event => events.push(event),
+      fetchImpl: async (_url, options) => {
+        calls++; const input = inputOf(options);
+        assert.deepEqual(input.records[0].editableFields, [namingOnly ? 'sessionName' : 'summary']);
+        if (!namingOnly) {assert.deepEqual(Object.keys(input), ['records']); assert.equal(options.body.includes('虚构请求'), false);}
+        if (calls === 1) return response([], {total_tokens: 100}, {finish_reason: 'length'});
+        return response(input.records.map(item => patch(item.id, namingOnly ? {sessionName: '固定名称'} : {summary: '已整理资料'})), {total_tokens: 20});
+      }});
+    assert.equal(result.suggestions.length, 2); assert.equal(calls, 3);
+    assert.deepEqual(events.map(event => event.purpose), Array(3).fill(namingOnly ? 'naming' : 'progress'));
+  }
+  let calls = 0;
+  await assert.rejects(() => S.run({items: ['a', 'b'].map(id => session(id, {sourceTitle: '', needsSessionName: true, firstMessage: '请求', latestMessage: '结果'})),
+    config, requireNames: true, fetchImpl: async () => {calls++; return calls === 1 ? response([], {}, {finish_reason: 'length'}) : response([patch('a')]);}}), /缺名会话返回名称/);
+  assert.equal(calls, 2);
+});
+
+test('ledger persistence errors and cancellation during a split never start extra requests or lose attempted usage', async () => {
+  const error = Object.assign(Error('Synthetic ledger failure'), {code: 'MODEL_OUTPUT_LENGTH'}); let calls = 0;
+  await assert.rejects(() => S.run({items: [web('a'), web('b')], config,
+    onUsage: () => {throw error;}, fetchImpl: async () => {calls++; return response([], {}, {finish_reason: 'length'});}}), value => value === error);
+  assert.equal(calls, 1);
+  const controller = new AbortController(), events = []; calls = 0;
+  await assert.rejects(() => S.run({items: [session('a'), session('b')], config, progressOnly: true, signal: controller.signal,
+    onUsage: event => events.push(event), fetchImpl: async () => {
+      calls++; if (calls === 1) return response([], {total_tokens: 55}, {finish_reason: 'length'});
+      controller.abort(); return new Promise(() => {});
+    }}), {name: 'AbortError'});
+  assert.equal(calls, 2); assert.equal(events.length, 2);
+  assert.deepEqual(events.map(event => event.status), ['response', 'cancelled']);
+  assert.equal(events[0].totalTokens, 55); assert.equal(events[1].totalTokens, null);
+});

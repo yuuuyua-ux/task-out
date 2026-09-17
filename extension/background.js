@@ -114,6 +114,8 @@ async function initialize() {
       baseUrl: old.baseUrl || 'https://api.openai.com/v1', model: old.model || '', rules: old.rules || '', apiKey: old.apiKey || '', autoSuggest: false, autoOrganize: true
     }});
   }
+  const initializedModel = await modelConfig();
+  state.groupSettings = {maxGroups: C.groupLimit(initializedModel.maxGroups ?? 5)};
   // An interrupted external operation is never repeated blindly after a worker restart.
   for (const r of state.records) if (r.pending) { r.error = '上次操作未确认完成，请核对网页后重试。'; }
   await persist();
@@ -331,6 +333,7 @@ async function undoAction() {
     const config = await modelConfig();
     return change(next => {
       const result = C.undo(next);
+      if (entry.label === '合并分组') next.groupMergeSuppressed = groupMergeSignature(next, config);
       // Undo is an intentional disposition of these exact inputs. Do not
       // silently apply the same classification again on the next timer tick.
       for (const item of entry.entries || []) {
@@ -437,6 +440,10 @@ async function saveModel(message) {
   }
   if (typeof message.autoSuggest === 'boolean') patch.autoSuggest = message.autoSuggest;
   if (typeof message.autoOrganize === 'boolean') patch.autoOrganize = message.autoOrganize;
+  if (message.maxGroups !== undefined && message.maxGroups !== null && String(message.maxGroups).trim() !== '') {
+    if (!['string', 'number'].includes(typeof message.maxGroups)) throw Error('最多分组数需为 1 到 50 的整数。');
+    patch.maxGroups = C.groupLimit(Number(message.maxGroups));
+  }
   const next = TaskOutSuggestions.normalizeConfig({...old, ...patch});
   if (!next.baseUrl || !next.model) throw Error('首次配置请填写模型服务地址和模型名称；已有配置留空表示不变。');
   const suppliedKey = typeof message.apiKey === 'string' ? message.apiKey.trim() : '';
@@ -450,14 +457,26 @@ async function saveModel(message) {
   if (llmConfig?.apiKey) await chrome.storage.local.set({llmConfig: {...llmConfig, apiKey: ''}});
   await enqueue(() => change(nextState => {
     invalidateSuggestions(nextState);
+    nextState.groupSettings = {maxGroups: C.groupLimit(next.maxGroups ?? 5)};
     nextState.organization = {...nextState.organization, status: next.autoOrganize ? 'idle' : 'paused', message: next.autoOrganize ? '自动整理已开启。' : '自动整理已暂停。', failures: 0, retryAt: 0};
+    const plan = C.groupingPlan(nextState, {epoch});
+    if (plan.error) nextState.organization = {...nextState.organization, status: 'error', ...plan.error};
   }));
   safeSend({type: 'task-out-updated'}); return {message: '模型设置已保存，尚未进行连接测试。'};
   } finally { modelChanging--; scheduleSuggestions(); }
 }
 function suggestionSignature(item, config, policyRevision) {
-  const input = TaskOutSuggestions.prepare([item], config, state.projects);
-  return JSON.stringify([config.baseUrl, config.model, config.rules, policyRevision, input]);
+  const input = TaskOutSuggestions.prepare([item], config, groupingProjects(state, config));
+  return JSON.stringify([config.baseUrl, config.model, config.rules, config.maxGroups, policyRevision, input]);
+}
+function groupingPlan(next = state, config = {}) { return C.groupingPlan(next, {epoch, maxGroups: config.maxGroups ?? next.groupSettings?.maxGroups ?? 5}); }
+function groupingProjects(next = state, config = {}) {
+  const plan = groupingPlan(next, config);
+  return plan.groups.filter(project => !plan.overLimit || plan.keepIds.includes(project.id)).map(({id, name, color}) => ({id, name, color}));
+}
+function groupMergeSignature(next = state, config = {}) {
+  return JSON.stringify([config.maxGroups ?? next.groupSettings?.maxGroups ?? 5,
+    next.records.filter(record => C.groupScope(record, next, {epoch})).map(record => [record.id, record.user.projectId, C.groupMovable(record)]).sort((a, b) => a[0].localeCompare(b[0]))]);
 }
 async function runSuggestions(ids, automatic = false, namingOnly = false) {
   if (aiJob) throw Error('正在生成整理建议，请稍后或取消。');
@@ -465,13 +484,19 @@ async function runSuggestions(ids, automatic = false, namingOnly = false) {
   const controller = new AbortController(); aiJob = controller;
   try {
     const config = await modelConfig(); await permission(config.baseUrl);
-    const snapshot = await enqueue(() => ({items: state.records.filter(r => ids.includes(r.id)).map(r => C.publicItem(r, Date.now(), state.connections)), projects: C.copy(state.projects), policyRevision: state.policyRevision || 0}));
+    const snapshot = await enqueue(() => {
+      const plan = groupingPlan(state, config);
+      if (!namingOnly && plan.error) throw Object.assign(Error(plan.error.message), {code: plan.error.code});
+      const groupOnly = !namingOnly && plan.overLimit;
+      return {items: state.records.filter(r => ids.includes(r.id) && (!groupOnly || plan.mergeIds.includes(r.id))).map(r => C.publicItem(r, Date.now(), state.connections)),
+        projects: namingOnly ? [] : groupingProjects(state, config), groupOnly, allowNewProjects: !groupOnly, policyRevision: state.policyRevision || 0};
+    });
     const signatures = new Map(snapshot.items.map(item => [item.id, suggestionSignature(item, config, snapshot.policyRevision)]));
     const result = await TaskOutSuggestions.run({...snapshot, config, apiKey: config.apiKey, signal: controller.signal, namingOnly, ...makeUsageRecorder(), purpose: namingOnly ? 'naming' : 'grouping', trigger: automatic ? 'automatic' : 'manual'});
     if (controller.signal.aborted) throw Error('整理已取消。');
     return await enqueue(() => change(next => {
       if (policyChanging || (next.policyRevision || 0) !== snapshot.policyRevision) throw Error('来源许可已变化，请重新生成建议。');
-      const produced = result.suggestions.filter(s => { const record = C.find(next, s.recordId); return record && C.withinHistory(record, next.connections); }).map(s => ({...s, kind: namingOnly ? 'naming' : 'organize', observedUpdatedAt: snapshot.items.find(i => i.id === s.recordId)?.updatedAt ?? null,
+      const produced = result.suggestions.filter(s => { const record = C.find(next, s.recordId); return record && C.withinHistory(record, next.connections); }).map(s => ({...s, kind: namingOnly ? 'naming' : snapshot.groupOnly ? 'grouping-merge' : 'organize', ...(snapshot.groupOnly ? {allowedProjectIds: snapshot.projects.map(project => project.id)} : {}), observedUpdatedAt: snapshot.items.find(i => i.id === s.recordId)?.updatedAt ?? null,
         contentRevision: snapshot.items.find(i => i.id === s.recordId)?.contentRevision || 0, policyRevision: snapshot.policyRevision}));
       next.suggestions = automatic ? [...next.suggestions.filter(s => !ids.includes(s.recordId)), ...produced] : produced;
       next.suggestionAttempts ||= {};
@@ -488,8 +513,18 @@ function organizationStatus(config) {
 }
 function organizationEligible(record, next, automatic, now = Date.now()) {
   if (record.parentId || record.user.archived || record.pending || !C.withinHistory(record, next.connections, now)) return false;
+  // Old IndexedDB facts may arrive before the upgraded local service syncs.
+  // Wait for naming v3 to repair known transport wrappers before an automatic
+  // request can generate and permanently save a name from those old facts.
+  if (automatic && record.kind === 'session' && C.historyWindowDays(record, next.connections) !== null && (record.namingVersion || 0) < 3 &&
+      [record.firstMessage, record.latestMessage, record.sourceTitle ? '' : record.title].some(text => /^<(?:current_user_request|interrupted_turn_context|command-args)\b/.test(String(text || '').trim()))) return false;
   if (record.kind === 'web') return record.connectorId === 'browser' ? record.binding?.live === true && record.binding.epoch === epoch : !automatic && !!C.webUrl(record.url);
-  return record.kind === 'session' && (!automatic || Number.isFinite(record.updatedAt) && record.updatedAt <= now && record.updatedAt >= now - 3 * 86400000);
+  if (record.kind !== 'session') return false;
+  // Local sessions already passed their configured 3/7/30-day window above.
+  // Standard imports have no source window; retain their existing automatic
+  // recency limit rather than sending arbitrarily old imported history.
+  if (!automatic || C.historyWindowDays(record, next.connections) !== null) return true;
+  return Number.isFinite(record.updatedAt) && record.updatedAt <= now && record.updatedAt >= now - 3 * 86400000;
 }
 function sessionGrouped(record, next = state) {
   return record.kind === 'session' && (!!record.user.projectId || !!record.user.manual?.projectId ||
@@ -500,13 +535,13 @@ function organizationInput(record, config, next, progressOnly = false) {
   const item = C.publicItem(record, Date.now(), next.connections);
   // Always summarize fresh source evidence, never the previous model output.
   item.summary = record.summary;
-  const prepared = progressOnly ? TaskOutSuggestions.prepareProgress([item], config) : TaskOutSuggestions.prepare([item], config, next.projects);
+  const prepared = progressOnly ? TaskOutSuggestions.prepareProgress([item], config) : TaskOutSuggestions.prepare([item], config, groupingProjects(next, config));
   return {item, input: prepared.included[0]};
 }
 function organizationSignature(record, config, next = state, progressOnly = false) {
   const {input} = organizationInput(record, config, next, progressOnly);
   const content = input ? {kind: input.kind, title: input.title, url: input.url, summary: input.summary, namingContext: input.namingContext} : null;
-  return JSON.stringify([config.baseUrl, config.model, progressOnly ? '' : config.rules, content]);
+  return JSON.stringify([config.baseUrl, config.model, progressOnly ? '' : config.rules, progressOnly ? null : config.maxGroups, content]);
 }
 function organizationCandidates(config, next = state) {
   const now = Date.now(), seconds = syncInterval(next);
@@ -533,6 +568,52 @@ function makeUsageRecorder() {
     }))
   };
 }
+async function mergeExcessGroups(config, controller, automatic, ids) {
+  let applied = 0, conflicts = 0;
+  const mergedIds = [];
+  const selectedIds = new Set(Array.isArray(ids) ? ids : []);
+  const budget = automatic ? 100 : selectedIds.size, attempted = new Set();
+  for (let processed = 0; processed < budget;) {
+    if (controller.signal.aborted) throw new DOMException('整理已取消。', 'AbortError');
+    const snapshot = await enqueue(() => {
+      const plan = groupingPlan(state, config);
+      if (plan.error) throw Object.assign(Error(plan.error.message), {code: plan.error.code});
+      if (!plan.overLimit || automatic && state.groupMergeSuppressed === groupMergeSignature(state, config)) return null;
+      const records = state.records.filter(record => plan.mergeIds.includes(record.id) && !attempted.has(record.id) && (automatic || selectedIds.has(record.id)) && organizationEligible(record, state, true)).slice(0, Math.min(5, budget - processed));
+      if (!records.length) return null;
+      return {items: records.map(record => C.publicItem(record, Date.now(), state.connections)), projects: groupingProjects(state, config), policyRevision: state.policyRevision || 0};
+    });
+    if (!snapshot) break;
+    snapshot.items.forEach(item => attempted.add(item.id));
+    await enqueue(() => change(next => { next.organization = {...next.organization, status: 'running', message: '正在合并现有分组，保留人工固定归属…'}; }));
+    const result = await TaskOutSuggestions.run({...snapshot, config, apiKey: config.apiKey, signal: controller.signal,
+      groupOnly: true, allowNewProjects: false, ...makeUsageRecorder(), purpose: 'grouping', trigger: automatic ? 'automatic' : 'manual'});
+    if (controller.signal.aborted) throw new DOMException('整理已取消。', 'AbortError');
+    const outcome = await enqueue(() => change(next => {
+      if (controller.signal.aborted || modelChanging || policyChanging || (next.policyRevision || 0) !== snapshot.policyRevision) throw new DOMException('设置已变化，本次整理已取消。', 'AbortError');
+      const produced = result.suggestions.map(s => {
+        const item = snapshot.items.find(item => item.id === s.recordId);
+        if (!item || Object.keys(s.patch).some(key => !['projectId', 'projectName'].includes(key))) throw Error('合并分组建议只能修改项目归属。');
+        return {...s, kind: 'grouping-merge', allowedProjectIds: snapshot.projects.map(project => project.id), observedUpdatedAt: item.updatedAt,
+          contentRevision: item.contentRevision || 0, policyRevision: snapshot.policyRevision};
+      });
+      const previous = next.suggestions; next.suggestions = [...previous, ...produced];
+      const appliedResult = C.applySuggestions(next, produced, {maxGroups: config.maxGroups, epoch});
+      const changedIds = produced.filter(s => !appliedResult.conflicts.includes(s.recordId)).map(s => s.recordId);
+      next.suggestions = previous.filter(s => !changedIds.includes(s.recordId));
+      for (const id of changedIds) {
+        const record = C.find(next, id);
+        next.organizationAttempts[id] = organizationSignature(record, config, next);
+        if (record.kind === 'session') next.sessionGrouping[id] = true;
+      }
+      next.organization = {...next.organization, lastApplied: applied + appliedResult.applied, lastRunAt: Date.now(), failures: 0, retryAt: 0};
+      return {...appliedResult, mergedIds: changedIds};
+    }));
+    applied += outcome.applied; conflicts += outcome.conflicts.length; processed += snapshot.items.length;
+    mergedIds.push(...outcome.mergedIds);
+  }
+  return {applied, conflicts, mergedIds};
+}
 async function runOrganization(ids, automatic = false, {progressOnly = false} = {}) {
   if (aiJob) {
     if (automatic) return {applied: 0, message: '已有整理正在进行。'};
@@ -544,6 +625,7 @@ async function runOrganization(ids, automatic = false, {progressOnly = false} = 
   }
   const controller = new AbortController(); aiJob = controller; organizationJob = controller;
   let applied = 0, conflicts = 0, continueAutomatic = false;
+  const mergedIds = new Set();
   try {
     const config = await modelConfig();
     if (automatic && (!config.autoOrganize || (state.organization.retryAt || 0) > Date.now())) return {applied: 0};
@@ -554,14 +636,22 @@ async function runOrganization(ids, automatic = false, {progressOnly = false} = 
     }
     await permission(config.baseUrl);
     if (controller.signal.aborted) throw new DOMException('整理已取消。', 'AbortError');
-    const selected = automatic ? organizationCandidates(config).slice(0, 100) : state.records.filter(r => (Array.isArray(ids) ? ids : []).includes(r.id));
-    if (!selected.length) return {applied: 0, message: '当前没有需要更新的内容。'};
+    if (!progressOnly) {
+      const merged = await mergeExcessGroups(config, controller, automatic, ids);
+      applied += merged.applied; conflicts += merged.conflicts;
+      merged.mergedIds.forEach(id => mergedIds.add(id));
+    }
+    const selected = automatic ? organizationCandidates(config).slice(0, 100) : state.records.filter(r => (Array.isArray(ids) ? ids : []).includes(r.id) && !mergedIds.has(r.id));
     // Separate requests make the output contract enforceable: grouped sessions
     // cannot receive project/type/name changes through the progress channel.
     const jobs = [];
     for (const progress of [false, true]) {
       const group = selected.filter(r => (progressOnly || automatic && sessionGrouped(r)) === progress);
-      for (let offset = 0; offset < group.length; offset += 100) jobs.push({progress, ids: new Set(group.slice(offset, offset + 100).map(r => r.id))});
+      // Missing names add first/latest excerpts and an extra output field.
+      // Commit bounded batches so one long or failed reply cannot discard
+      // other batches that have already completed.
+      const batchSize = !progress && group.some(r => organizationInput(r, config, state).input?.namingContext) ? 5 : 20;
+      for (let offset = 0; offset < group.length; offset += batchSize) jobs.push({progress, ids: new Set(group.slice(offset, offset + batchSize).map(r => r.id))});
     }
     await enqueue(() => change(next => { next.organization = {...next.organization, status: 'running', message: progressOnly ? '正在更新会话进展…' : '正在处理新内容与会话进展…'}; }));
     for (const job of jobs) {
@@ -569,7 +659,9 @@ async function runOrganization(ids, automatic = false, {progressOnly = false} = 
       const snapshot = await enqueue(() => {
         const records = state.records.filter(r => job.ids.has(r.id) && organizationEligible(r, state, automatic) &&
           (!job.progress || r.kind === 'session' && state.progressAttempts?.[r.id] !== organizationSignature(r, config, state, true)) && organizationInput(r, config, state, job.progress).input);
-        return {items: records.map(r => organizationInput(r, config, state, job.progress).item), projects: job.progress ? [] : C.copy(state.projects), policyRevision: state.policyRevision || 0,
+        const plan = groupingPlan(state, config);
+        if (!job.progress && plan.error) throw Object.assign(Error(plan.error.message), {code: plan.error.code});
+        return {items: records.map(r => organizationInput(r, config, state, job.progress).item), projects: job.progress ? [] : groupingProjects(state, config), policyRevision: state.policyRevision || 0,
           signatures: new Map(records.map(r => [r.id, organizationSignature(r, config, state, job.progress)]))};
       });
       const result = await TaskOutSuggestions.run({...snapshot, config, apiKey: config.apiKey, signal: controller.signal,
@@ -586,7 +678,7 @@ async function runOrganization(ids, automatic = false, {progressOnly = false} = 
         });
         const previous = next.suggestions;
         next.suggestions = [...previous, ...produced];
-        const appliedResult = C.applySuggestions(next, produced);
+        const appliedResult = C.applySuggestions(next, produced, {maxGroups: config.maxGroups, epoch});
         const conflicted = new Set(appliedResult.conflicts);
         const appliedIds = new Set(produced.filter(s => !conflicted.has(s.recordId)).map(s => s.recordId));
         next.suggestions = previous.filter(s => !appliedIds.has(s.recordId));
@@ -613,9 +705,13 @@ async function runOrganization(ids, automatic = false, {progressOnly = false} = 
       }));
       applied += batch.applied; conflicts += batch.conflicts.length;
     }
-    const message = applied ? `${progressOnly ? '已更新进展' : '已整理'} ${applied} 条内容，可撤销。` : conflicts ? '部分内容已变化，已保留新修改。' : '当前内容已检查，无需调整。';
+    const remainingPlan = groupingPlan(state, config);
+    let message = applied ? `${progressOnly ? '已更新进展' : '已整理'} ${applied} 条内容，可撤销。` : conflicts ? '部分内容已变化，已保留新修改。' : '当前内容已检查，无需调整。';
+    if (!automatic && !progressOnly && remainingPlan.overLimit) message += ` 当前仍有 ${remainingPlan.groups.length} 个在用分组，上限为 ${remainingPlan.maxGroups}；筛选外或尚未处理的分组未合并。请扩大筛选范围后继续，开启自动整理，或提高上限。`;
     await enqueue(() => change(next => { next.organization = {...next.organization, status: 'idle', message}; }));
-    continueAutomatic = (automatic || progressOnly && config.autoOrganize) && organizationCandidates(config).length > 0;
+    const mergeRemaining = !remainingPlan.error && remainingPlan.overLimit && state.groupMergeSuppressed !== groupMergeSignature(state, config) &&
+      remainingPlan.mergeIds.some(id => organizationEligible(C.find(state, id), state, true));
+    continueAutomatic = (automatic || progressOnly && config.autoOrganize) && (organizationCandidates(config).length > 0 || applied > 0 && mergeRemaining);
     return {applied, conflicts, message};
   } catch (error) {
     await enqueue(() => change(next => {
@@ -623,7 +719,7 @@ async function runOrganization(ids, automatic = false, {progressOnly = false} = 
         next.organization = {...next.organization, status: 'idle', message: '整理已取消，保留已完成的修改。'};
       } else {
         const failures = (next.organization.failures || 0) + 1;
-        next.organization = {...next.organization, status: 'error', message: error.message || '整理失败，请检查模型设置。', failures, retryAt: Date.now() + Math.min(30 * 60000, 30000 * 2 ** Math.min(failures - 1, 6))};
+        next.organization = {...next.organization, status: 'error', code: error.code, message: error.message || '整理失败，请检查模型设置。', failures, retryAt: Date.now() + Math.min(30 * 60000, 30000 * 2 ** Math.min(failures - 1, 6))};
       }
     }));
     if (!automatic) throw error;
@@ -776,7 +872,7 @@ async function dispatch(message) {
     if (action === 'export') {
       if (message.mode === 'config') return {data: {format: 'task-out-config', version: 2,
         connections: state.connections.map(c => ({connectorId: c.connectorId, name: '我的来源', root: '', historyDays: c.historyDays, enabled: false, allowAI: false, includeSummary: false, includeNaming: false})),
-        model: {baseUrl: '', model: '', rules: '', autoSuggest: false, autoOrganize: true}}};
+        model: {baseUrl: '', model: '', rules: '', maxGroups: 5, autoSuggest: false, autoOrganize: true}}};
       return {data: {format: 'task-out-records', version: 2, projects: C.copy(state.projects), sourceStyles: C.copy(state.sourceStyles), records: state.records.map(r => {
         const {binding, pending, error, observations, ...rest} = C.copy(r); return rest;
       })}};
@@ -797,7 +893,7 @@ async function dispatch(message) {
         const before = C.copy(r.user); r.user.saved = !r.user.saved; r.user.revision++;
         C.pushUndo(next, [{id: r.id, before, after: C.copy(r.user)}], '稍后查看'); return {message: r.user.saved ? '已加入稍后查看。' : '已移出稍后查看。'};
       }
-      if (action === 'ai-apply') { if (policyChanging) throw Error('来源许可正在更新，请稍后应用。'); return C.applySuggestions(next, message.suggestions || []); }
+      if (action === 'ai-apply') { if (policyChanging || modelChanging) throw Error('来源或模型设置正在更新，请稍后应用。'); return C.applySuggestions(next, message.suggestions || [], {epoch}); }
       if (action === 'migration-skip') { next.migration.skipped = true; next.migration.pending = false; return {message: '已保留旧数据，暂不迁移。'}; }
       throw Error('不支持的操作。');
     });

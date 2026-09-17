@@ -91,7 +91,7 @@ test('old cursors recover first message from approved DB metadata and keep the l
   const record=(await scan({...x.connection,metadataRoot:x.metadataRoot,canonicalMetadataRoot:x.metadataRoot},options)).records[0];
   assert.equal(record.firstMessage,'Original first message from approved metadata');
   assert.equal(record.latestMessage,'Later followup must not become the first message');
-  assert.equal([...cursors.values()][0].state.namingVersion,2);
+  assert.equal([...cursors.values()][0].state.namingVersion,3);
   assert.equal([...cursors.values()][0].state.firstMessage,record.firstMessage);
 });
 

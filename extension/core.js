@@ -261,6 +261,7 @@ const TaskOutCore = (() => {
       source: {id: text(source.id || 'unknown', 160), label: text(source.label || '来源待识别', 80), icon: text(source.icon || '◇', 8)},
       title: text(input.title || '未命名会话', 500), url: webUrl(input.url),
       sourceTitle: input.kind === 'session' ? text(input.sourceTitle ?? (input.titleBasis ? '' : input.title), 500) : '',
+      namingVersion: Number.isSafeInteger(input.namingVersion) && input.namingVersion > 0 ? input.namingVersion : 0,
       titleBasis: text(input.titleBasis || (input.kind === 'web' ? 'browser-title' : input.title ? 'source-title' : 'unknown'), 100),
       firstMessage: input.kind === 'session' ? text(input.firstMessage, 1200) : '',
       latestMessage: input.kind === 'session' ? text(input.latestMessage, 1200) : '',
@@ -288,7 +289,7 @@ const TaskOutCore = (() => {
       next.observations.forEach(o => observations.set(o.connectionId, o));
       const late = next.updatedAt ? (!old.updatedAt || next.updatedAt >= old.updatedAt) : !old.updatedAt;
       const facts = late ? next : {...old, source: next.source, locator: next.locator || old.locator};
-      const contentKeys = ['title', 'sourceTitle', 'titleBasis', 'firstMessage', 'latestMessage', 'url', 'summary', 'next', 'updatedAt', 'timeline'];
+      const contentKeys = ['title', 'sourceTitle', 'titleBasis', 'namingVersion', 'firstMessage', 'latestMessage', 'url', 'summary', 'next', 'updatedAt', 'timeline'];
       const changed = contentKeys.some(key => JSON.stringify(old[key]) !== JSON.stringify(facts[key]));
       const contentRevision = (old.contentRevision || 0) + (changed ? 1 : 0);
       Object.assign(old, facts, {user: old.user, binding: old.binding, pending: old.pending, error: old.error,
@@ -314,6 +315,34 @@ const TaskOutCore = (() => {
     if (days === null) return true;
     const at = time(record.updatedAt);
     return at !== null && at <= now && at >= now - days * 86400000;
+  }
+  function groupLimit(value = 5) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > 50) throw Error('最多分组数需为 1 到 50 的整数。');
+    return value;
+  }
+  function groupScope(record, state, {epoch, now = Date.now()} = {}) {
+    if (record.parentId || record.user.archived) return false;
+    if (record.kind === 'web') return record.connectorId === 'browser' && record.binding?.live === true && (!epoch || record.binding.epoch === epoch);
+    if (record.kind !== 'session' || !withinHistory(record, state.connections, now)) return false;
+    return historyWindowDays(record, state.connections) !== null || time(record.updatedAt) !== null && record.updatedAt <= now && record.updatedAt >= now - 3 * 86400000;
+  }
+  function groupMovable(record) {
+    return !record.pending && !record.user.manual?.projectId && (record.kind === 'web'
+      ? !record.observations.some(observation => observation.allowAI !== true)
+      : record.observations.length > 0 && record.observations.every(observation => observation.allowAI === true));
+  }
+  function groupingPlan(state, options = {}) {
+    const maxGroups = groupLimit(options.maxGroups ?? state.groupSettings?.maxGroups ?? 5);
+    const active = state.records.filter(record => groupScope(record, state, options));
+    const groups = state.projects.map((project, order) => {
+      const members = active.filter(record => record.user.projectId === project.id);
+      return {...copy(project), count: members.length, protected: members.some(record => !groupMovable(record)), order};
+    }).filter(project => project.count).sort((a, b) => Number(b.protected) - Number(a.protected) || b.count - a.count || a.order - b.order);
+    const protectedCount = groups.filter(project => project.protected).length;
+    const keepIds = groups.slice(0, Math.max(maxGroups, protectedCount)).map(project => project.id);
+    return {maxGroups, groups, protectedCount, keepIds, overLimit: groups.length > maxGroups,
+      mergeIds: active.filter(record => record.user.projectId && !keepIds.includes(record.user.projectId) && groupMovable(record)).map(record => record.id),
+      error: protectedCount > maxGroups ? {code: 'GROUP_LIMIT_PROTECTED', message: `已有 ${protectedCount} 个人工固定或不可自动调整的分组，超过上限 ${maxGroups}。请提高上限，或手动调整这些归属后重试。`} : null};
   }
   function publicItem(record, now = Date.now(), connections = []) {
     const r = record, u = r.user, days = historyWindowDays(r, connections);
@@ -412,7 +441,19 @@ const TaskOutCore = (() => {
     }
     return {restored, conflicts, message: `已撤销 ${restored} 条修改${conflicts ? `；${conflicts} 条因后续修改已跳过` : ''}`};
   }
-  function applySuggestions(state, suggestions) {
+  function applySuggestions(state, suggestions, options = {}) {
+    // Quota checks can fail after an earlier item in the same preview. Stage
+    // the whole application so a rejected batch never leaves partial edits.
+    const staged = {...state, projects: copy(state.projects), suggestions: copy(state.suggestions), undo: copy(state.undo),
+      records: state.records.map(record => ({...record, user: copy(record.user)}))};
+    const result = applySuggestionsInPlace(staged, suggestions, options);
+    for (let index = 0; index < state.records.length; index++) {
+      if (state.records[index].user.revision !== staged.records[index].user.revision) state.records[index].user = staged.records[index].user;
+    }
+    state.projects = staged.projects; state.suggestions = staged.suggestions; state.undo = staged.undo;
+    return result;
+  }
+  function applySuggestionsInPlace(state, suggestions, options = {}) {
     if (!Array.isArray(suggestions)) throw Error('整理建议格式错误。');
     const entries = [], created = [], conflicts = [], applied = [];
     for (const s of suggestions) {
@@ -421,6 +462,9 @@ const TaskOutCore = (() => {
       const allowed = record && (record.kind === 'web' ? !record.observations.some(o => o.allowAI !== true) : record.observations.length > 0 && record.observations.every(o => o.allowAI === true));
       if (!stored || !record || !allowed || record.user.archived || !withinHistory(record, state.connections) || record.user.revision !== stored.revision || record.updatedAt !== stored.observedUpdatedAt || (stored.contentRevision !== undefined && stored.contentRevision !== record.contentRevision) || (stored.policyRevision !== undefined && stored.policyRevision !== state.policyRevision)) { conflicts.push(s.recordId); continue; }
       const patch = {...s.patch};
+      const merging = stored.kind === 'grouping-merge';
+      if (merging && (Object.keys(patch).length !== 1 || !own(patch, 'projectId') && !own(patch, 'projectName'))) throw Error('合并分组建议只能修改项目归属。');
+      if (('projectId' in patch || 'projectName' in patch) && record.user.manual?.projectId) { conflicts.push(s.recordId); continue; }
       if (stored.kind === 'progress') {
         if (Object.keys(patch).length !== 1 || !own(patch, 'summary') || typeof patch.summary !== 'string' || patch.summary.length > 600) throw Error('进展建议只能修改一句近况。');
         if (record.kind !== 'session' || record.user.manual?.summary || !record.observations.every(o => o.includeSummary === true)) { conflicts.push(s.recordId); continue; }
@@ -428,17 +472,33 @@ const TaskOutCore = (() => {
       if (stored.kind === 'naming' && Object.keys(patch).some(key => key !== 'sessionName')) throw Error('命名建议只能修改会话名称。');
       if (Object.keys(patch).some(k => !['projectId', 'projectName', 'tags', 'summary', 'sessionName'].includes(k))) throw Error('建议包含不可修改字段。');
       if ('sessionName' in patch && (!('sessionName' in stored.patch) || !publicItem(record).needsSessionName || !record.observations.every(o => o.includeNaming === true))) { conflicts.push(s.recordId); continue; }
+      let plannedProject = null;
       if (patch.projectName) {
         const name = text(patch.projectName, 60);
-        let p = state.projects.find(p => p.name === name);
-        if (!p) { p = saveProject(state, {name}); created.push(copy(p)); }
-        patch.projectId = p.id; delete patch.projectName;
+        const matches = state.projects.filter(p => p.name === name);
+        if (matches.length > 1) throw Error('目标项目名称有歧义，请重新整理。');
+        plannedProject = matches[0] || {name};
+        patch.projectId = plannedProject.id || null; delete patch.projectName;
+      }
+      if ('projectId' in patch) {
+        const plan = groupingPlan(state, options);
+        if (merging) {
+          if (plan.error) throw Object.assign(Error(plan.error.message), {code: plan.error.code});
+          const allowedIds = stored.allowedProjectIds || options.allowedProjectIds || plan.keepIds;
+          if (!groupScope(record, state, options) || !groupMovable(record) || !patch.projectId || !allowedIds.includes(patch.projectId) || !plan.keepIds.includes(patch.projectId))
+            throw Object.assign(Error('保留分组或人工归属已变化，请重新合并。'), {code: 'GROUP_LIMIT_CONFLICT'});
+        } else if ((!patch.projectId && plannedProject || patch.projectId && !plan.groups.some(project => project.id === patch.projectId)) && plan.groups.length >= plan.maxGroups) {
+          throw Object.assign(Error(`当前已有 ${plan.groups.length} 个在用分组，达到上限 ${plan.maxGroups}。请使用已有分组，或提高上限后重新整理。`), {code: 'GROUP_LIMIT_REACHED'});
+        }
+        if (plannedProject && !plannedProject.id) {
+          const project = saveProject(state, plannedProject); created.push(copy(project)); patch.projectId = project.id;
+        }
       }
       // Both explicit preview application and automatic organization use the
       // same revision, permission and source-content checks above.
       entries.push(userPatch(state, record.id, patch, false)); applied.push(stored.id);
     }
-    pushUndo(state, entries, 'AI 整理', created);
+    pushUndo(state, entries, suggestions.length && suggestions.every(s => state.suggestions.find(p => p.id === s.id)?.kind === 'grouping-merge') ? '合并分组' : 'AI 整理', created);
     state.suggestions = state.suggestions.filter(s => !applied.includes(s.id));
     return {applied: entries.length, conflicts, message: `已应用 ${entries.length} 条建议${conflicts.length ? `；${conflicts.length} 条已变化，请重新预览` : ''}`};
   }
@@ -538,6 +598,6 @@ const TaskOutCore = (() => {
     return {records, projects, sourceStyles, warnings};
   }
   return {COLORS, SOURCE_COLORS, SOURCE_ICONS, TYPE_LABELS, normalizeTypeTags, normalizeTypes, recordUsage, saveModelPricing, usageReport, sourceAppearance, saveSourceStyle, resetSourceStyle, initial, copy, text, time, uid, webUrl, defaultUser, normalizeRecord, find, upsert,
-    publicItem, historyWindowDays, withinHistory, saveProject, userPatch, pushUndo, pruneEmptyProjects, undo, applySuggestions, importRecords};
+    publicItem, historyWindowDays, withinHistory, groupLimit, groupScope, groupMovable, groupingPlan, saveProject, userPatch, pushUndo, pruneEmptyProjects, undo, applySuggestions, importRecords};
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = TaskOutCore;

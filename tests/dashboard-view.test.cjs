@@ -623,3 +623,44 @@ test('suggestion review edits one canonical type rather than accepting comma-sep
   await assert.rejects(app.action('ai-apply'),/请选择一个有效类型/);assert.equal(app.requests.some(request=>request.action==='ai-apply'),false);
   type='开发实现';await app.action('ai-apply');assert.deepEqual(Array.from(app.requests.find(request=>request.action==='ai-apply').suggestions[0].patch.tags),['开发实现']);
 });
+
+
+test('settings summarize the configured AI group cap and the preview exports the same default',async()=>{
+  const app=dashboard({...fixture(),model:{baseUrl:'https://model.example/v1',model:'fixture-model',maxGroups:12}});
+  await app.refresh();await app.action('settings');
+  assert.match(app.node('#dialog').innerHTML,/AI 最多 12 个分组/);
+  const preview=dashboard({},undefined,{preview:true});
+  await preview.refresh();await preview.action('settings');
+  assert.match(preview.node('#dialog').innerHTML,/AI 最多 5 个分组/);
+  const snapshot=await preview.request('snapshot');
+  assert.equal(snapshot.state.model.maxGroups,5);
+  const exported=await preview.request('export',{mode:'config'});
+  assert.equal(exported.data.model.maxGroups,5);
+});
+
+test('protected group overflow points to cap or manual assignment changes without inventing a model failure',async()=>{
+  const message='已有 7 个人工固定或不可自动调整的分组，超过上限 5。请提高上限，或手动调整这些归属后重试。';
+  const app=dashboard({...fixture(),model:{baseUrl:'https://model.example/v1',model:'fixture-model',maxGroups:5},organization:{status:'error',message}});
+  await app.refresh();await app.action('settings');
+  assert.match(app.node('#organization-status').innerHTML,/需保留的分组数超过上限/);
+  const html=app.node('#dialog').innerHTML,error=html.match(/<div class="organization-error"[^>]*>([\s\S]*?)<\/div>/)[1];
+  assert.match(error,/提高“最多分组数”/);assert.match(error,/手动将这些记录归入其他项目/);
+  assert.match(error,/固定归属不会自动改动/);assert.ok(error.includes(message));
+  assert.doesNotMatch(error,/服务兼容性|接口地址|无法连接|更换模型/);
+  assert.equal(app.requests.every(request=>request.action==='snapshot'),true);
+});
+
+test('group cap and incomplete consolidation errors keep recovery advice separate from connection failures',async()=>{
+  for(const [message,label,advice] of [
+    ['模型提出的分组超过设置上限，当前批次未应用。','模型没有遵守分组上限','提高上限'],
+    ['模型未为每条待合并记录选择保留项目，当前批次未应用。','部分记录尚未完成合并','剩余分组'],
+    ['当前在用分组超过上限，请先合并已有分组。','需要先合并已有分组','合并自动分组'],
+    ['当前已有 5 个在用分组，达到上限 5。','需要先合并已有分组','提高上限'],
+  ]){
+    const app=dashboard({...fixture(),model:{baseUrl:'https://model.example/v1',model:'fixture-model'},organization:{status:'error',message}});
+    await app.refresh();await app.action('settings');
+    assert.ok(app.node('#organization-status').innerHTML.includes(label));
+    const error=app.node('#dialog').innerHTML.match(/<div class="organization-error"[^>]*>([\s\S]*?)<\/div>/)[1];
+    assert.ok(error.includes(advice));assert.doesNotMatch(error,/无法连接|API Key|服务兼容性/);
+  }
+});

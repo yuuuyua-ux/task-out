@@ -73,9 +73,108 @@ test('automatic scope uses recent activity, live browser identity and strict sou
   const unknown = session('unknown-update', {createdAt: NOW, updatedAt: null}), child = session('child', {parentId: recent.id});
   const denied = session('denied', {observations: [{connectionId: 'restricted', allowAI: false}]}), archived = session('archived'); archived.user.archived = true;
   const detached = C.normalizeRecord({id: 'detached', kind: 'web', connectorId: 'browser', title: '离线网页', url: 'https://example.test/detached'});
-  const x = await app({initial: workspace([recent, old, unknown, child, denied, archived, detached])}); await x.tick(false);
+  const state = workspace([recent, old, unknown, child, denied, archived, detached]); state.connections[0].historyDays = 3;
+  const x = await app({initial: state}); await x.tick(false);
   assert.deepEqual(x.requests.flatMap(r => r.records.map(i => i.id)), [recent.id]);
   assert.equal(x.disk().records.find(r => r.id === denied.id).user.projectId, null);
+});
+
+test('automatic local grouping follows each configured activity window, independent of creation time', async () => {
+  for (const [days, expected] of [[3, ['recent']], [7, ['recent', 'six-days']], [30, ['recent', 'six-days', 'twenty-days']]]) {
+    const state = workspace([
+      session('recent'), session('six-days', {createdAt: NOW, updatedAt: NOW - 6 * DAY}),
+      session('twenty-days', {updatedAt: NOW - 20 * DAY}), session('expired', {updatedAt: NOW - 31 * DAY}),
+      session('unknown-time', {updatedAt: null}), session('future', {updatedAt: NOW + DAY}),
+    ]);
+    state.connections[0].historyDays = days;
+    const x = await app({initial: state}); await x.tick(false);
+    assert.deepEqual(x.requests.flatMap(request => request.records.map(record => record.id)), expected);
+    assert.equal(x.disk().records.filter(record => record.user.projectId).length, expected.length);
+    await x.tick(); assert.equal(x.requests.length, 1, 'unchanged records are not regrouped');
+  }
+});
+
+test('restored older ungrouped sessions are classified once while grouped sessions retain project type and fixed name', async () => {
+  const pending = session('restored-pending', {updatedAt: NOW - 20 * DAY}); pending.user.archived = true;
+  const grouped = session('restored-grouped', {updatedAt: NOW - 20 * DAY, summary: '来源提供的新进展'}); grouped.user.archived = true;
+  const state = workspace([pending, grouped]);
+  const project = C.saveProject(state, {name: '保留的项目'});
+  Object.assign(grouped.user, {projectId: project.id, tags: ['方案设计'], sessionName: '保留的固定名称'});
+  const x = await app({initial: state}); await x.tick(false); assert.equal(x.requests.length, 0);
+  await x.call('restore', {ids: [pending.id, grouped.id]}); await x.tick();
+  assert.equal(x.requests.length, 2);
+  assert.deepEqual(x.requests[0].records.map(record => record.id), [pending.id]);
+  assert.deepEqual(x.requests[1].records[0].editableFields, ['summary']);
+  const updated = x.disk().records.find(record => record.id === grouped.id);
+  assert.equal(updated.user.projectId, project.id); assert.deepEqual(updated.user.tags, ['方案设计']);
+  assert.equal(updated.user.sessionName, '保留的固定名称');
+  const restarted = await app({initial: x.disk(), local: x.local()}); await restarted.tick(false);
+  assert.equal(restarted.requests.length, 0);
+});
+
+test('wide shared-source windows retain strict model permissions and manual unassigned choices', async () => {
+  const observations = [{connectionId: 'narrow', allowAI: true, includeSummary: true}, {connectionId: 'wide', allowAI: true, includeSummary: true}];
+  const allowed = session('shared-allowed', {updatedAt: NOW - 20 * DAY, observations});
+  const denied = session('shared-denied', {updatedAt: NOW - 20 * DAY, observations: [observations[0], {...observations[1], allowAI: false}]});
+  const manual = session('manual-unassigned', {updatedAt: NOW - 20 * DAY}); manual.user.manual.projectId = true;
+  const state = workspace([allowed, denied, manual]);
+  state.connections.push({id: 'narrow', historyDays: 3}, {id: 'wide', historyDays: 30});
+  const x = await app({initial: state}); await x.tick(false);
+  assert.deepEqual(x.requests[0].records.map(record => record.id), [allowed.id]);
+  assert.deepEqual(x.requests[1].records.map(record => record.id), [manual.id]);
+  assert.deepEqual(x.requests[1].records[0].editableFields, ['summary']);
+  assert.equal(x.disk().records.find(record => record.id === manual.id).user.projectId, null);
+  assert.equal(x.disk().records.find(record => record.id === denied.id).user.projectId, null);
+});
+
+test('imported sessions without a source window do not silently expand automatic history', async () => {
+  const records = C.importRecords('synthetic-sessions', JSON.stringify([
+    {id: 'recent', kind: 'session', title: '最近导入的会话', updatedAt: NOW, allowAI: true},
+    {id: 'older', kind: 'session', title: '较早导入的会话', updatedAt: NOW - 20 * DAY, allowAI: true},
+  ])).records;
+  const x = await app({initial: workspace(records)}); await x.tick(false);
+  assert.deepEqual(x.requests.flatMap(request => request.records.map(record => record.id)), [records[0].id]);
+  await x.call('organize-now', {ids: [records[1].id]});
+  assert.ok(x.disk().records.every(record => record.user.projectId));
+});
+
+test('automatic startup waits for repaired local naming facts instead of fixing a wrapper as a permanent name', async () => {
+  const polluted = session('waiting-for-cleanup', {namingVersion: 2, sourceTitle: '', titleBasis: 'first-message',
+    title: '<current_user_request>比较虚构方案</current_user_request>',
+    firstMessage: '<current_user_request>比较虚构方案</current_user_request>', latestMessage: '已完成虚构对比', updatedAt: NOW - 20 * DAY});
+  const state = workspace([polluted]);
+  const x = await app({initial: state, tabs: [{id: 1, windowId: 1, title: '示例网页', url: 'https://example.test/cleanup', lastAccessed: NOW}]});
+  await x.tick(false);
+  assert.equal(x.requests.length, 1); assert.ok(x.requests[0].records.every(record => record.kind === 'web'));
+  assert.equal(x.disk().records.find(record => record.id === polluted.id).user.sessionName, '');
+  const repaired = x.disk(), previousRevision = repaired.records.find(record => record.id === polluted.id).contentRevision;
+  C.upsert(repaired, [{...polluted, namingVersion: 3, title: '比较虚构方案', firstMessage: '比较虚构方案'}]);
+  const current = repaired.records.find(record => record.id === polluted.id);
+  assert.equal(current.updatedAt, polluted.updatedAt); assert.ok(current.contentRevision > previousRevision);
+  const restarted = await app({initial: repaired, local: x.local()}); await restarted.tick(false);
+  assert.equal(restarted.requests.length, 1);
+  assert.equal(restarted.requests[0].records[0].namingContext.firstMessage, '比较虚构方案');
+  assert.equal(restarted.disk().records.find(record => record.id === polluted.id).user.sessionName, '固定生成名称');
+});
+
+test('missing-name sessions commit in small batches and retry only unfinished grouping after a later failure', async () => {
+  const records = Array.from({length: 12}, (_, index) => session(`batch-${index}`, {namingVersion: 3,
+    sourceTitle: '', titleBasis: 'first-message', firstMessage: '设计虚构产品', latestMessage: '补充虚构方案', updatedAt: NOW - 20 * DAY}));
+  let requests = 0;
+  const x = await app({initial: workspace(records), complete: input => {
+    if (++requests === 2) return {ok: false, status: 503};
+    return completion(input.records);
+  }});
+  await x.tick(false);
+  assert.deepEqual(x.requests.map(input => input.records.length), [5, 5]);
+  const saved = x.disk().records.filter(record => record.user.projectId);
+  assert.equal(saved.length, 5); assert.ok(saved.every(record => record.user.sessionName === '固定生成名称'));
+  assert.equal((await x.call('snapshot')).state.organization.status, 'error');
+  x.advance(31000); await x.tick();
+  assert.deepEqual(x.requests.map(input => input.records.length), [5, 5, 5, 2]);
+  assert.ok(x.disk().records.every(record => record.user.projectId && record.user.sessionName));
+  assert.ok(x.requests.slice(2).every(input => input.records.every(record => !saved.some(prior => prior.id === record.id))));
+  for (const prior of saved) assert.deepEqual(x.disk().records.find(record => record.id === prior.id).user, prior.user);
 });
 
 test('explicit opt-out survives empty settings saves and restart; organize-now still applies', async () => {
@@ -247,4 +346,136 @@ test('adding a price during an unpriced in-flight request does not invent a hist
   gate.resolve();await running;
   const report=(await x.call('usage-report',{days:1})).report;
   assert.equal(report.totals.unpricedRequests,1);assert.deepEqual(report.totals.estimatedCosts,{});
+});
+
+function groupedWorkspace(count) {
+  const state = workspace();
+  for (let index = 0; index < count; index++) {
+    const record = session(`quota-${index}`, {summary: ''}); record.observations[0].includeSummary = false;
+    record.user.projectId = C.saveProject(state, {name: `虚构原分组${index}`}).id;
+    record.user.tags = ['方案设计']; record.user.sessionName = `已有固定名称${index}`;
+    state.records.push(record);
+  }
+  return state;
+}
+const projectOnlyReply = input => response({choices: [{finish_reason: 'stop', message: {content: JSON.stringify({suggestions:
+  input.records.map(record => ({recordId: record.id, patch: {projectId: input.projects[0].id}}))})}}]});
+
+test('group limit defaults to five, blank saves preserve it and paused automation never merges', async () => {
+  const x = await app({initial: groupedWorkspace(7), model: {autoOrganize: false}});
+  assert.equal((await x.call('snapshot')).state.model.maxGroups, 5);
+  await x.call('model-save', {maxGroups: 8}); await x.tick(false);
+  assert.equal(x.requests.length, 0); assert.equal(x.disk().groupSettings.maxGroups, 8);
+  for (const value of ['', '   ', null]) await x.call('model-save', {maxGroups: value});
+  assert.equal(x.local().taskOutModel.maxGroups, 8);
+  for (const value of [0, 51, 1.5, true, 'invalid']) await assert.rejects(() => x.call('model-save', {maxGroups: value}), /1 到 50/);
+  assert.equal(x.local().taskOutModel.maxGroups, 8);
+  const restarted = await app({initial: x.disk(), local: x.local()}); await restarted.tick(false);
+  assert.equal(restarted.disk().groupSettings.maxGroups, 8); assert.equal(restarted.requests.length, 0);
+});
+
+test('upgraded automatic grouping merges excess groups without changing fixed names types or protected memberships', async () => {
+  const state = groupedWorkspace(7);
+  state.records[5].user.manual.projectId = true; state.records[6].observations[0].allowAI = false;
+  const before = C.copy(state.records.map(record => record.user));
+  const x = await app({initial: state, complete: projectOnlyReply}); await x.tick(false);
+  assert.equal(C.groupingPlan(x.disk()).groups.length, 5, JSON.stringify(x.disk().organization)); assert.equal(x.requests.length, 1);
+  assert.ok(x.requests[0].records.every(record => JSON.stringify(record.editableFields) === '["projectId"]'));
+  assert.deepEqual(x.disk().records[5].user, before[5]); assert.deepEqual(x.disk().records[6].user, before[6]);
+  x.disk().records.forEach((record, index) => {assert.deepEqual(record.user.tags, before[index].tags); assert.equal(record.user.sessionName, before[index].sessionName);});
+  await x.tick(); assert.equal(x.requests.length, 1);
+  await x.call('undo'); assert.equal(C.groupingPlan(x.disk()).groups.length, 7);
+  await x.tick(); assert.equal(x.requests.length, 1, 'undo is not silently reversed by the next automatic tick');
+  const restarted = await app({initial: x.disk(), local: x.local(), complete: projectOnlyReply}); await restarted.tick(false);
+  assert.equal(restarted.requests.length, 0);
+  await restarted.call('organize-now', {ids: restarted.disk().records.filter(record => C.groupMovable(record)).map(record => record.id)}); assert.ok(C.groupingPlan(restarted.disk()).groups.length <= 5);
+});
+
+test('protected groups exceeding the limit report a fix while saving the preference without moving them', async () => {
+  const state = groupedWorkspace(6); state.records.forEach(record => {record.user.manual.projectId = true;});
+  const x = await app({initial: state}); const before = C.copy(x.disk().records.map(record => record.user));
+  await x.call('model-save', {maxGroups: 5}); await x.tick(false);
+  assert.equal(x.requests.length, 0); assert.equal(x.disk().organization.code, 'GROUP_LIMIT_PROTECTED');
+  assert.equal(x.local().taskOutModel.maxGroups, 5); assert.deepEqual(x.disk().records.map(record => record.user), before);
+});
+
+test('new-content batches receive freshly occupied groups and never repeat an already saved batch after quota failure', async () => {
+  const state = workspace(Array.from({length: 40}, (_, index) => session(`new-quota-${index}`, {summary: ''})));
+  let rejectExtra = true;
+  const x = await app({initial: state, complete: input => {
+    if (!input.projects.length) return response({choices: [{finish_reason: 'stop', message: {content: JSON.stringify({suggestions:
+      input.records.map((record, index) => ({recordId: record.id, patch: {projectName: `允许组${index % 5}`}}))})}}]});
+    if (rejectExtra) return completion(input.records, {projectName: '超限新组'});
+    return projectOnlyReply(input);
+  }});
+  await x.tick(false);
+  assert.equal(C.groupingPlan(x.disk()).groups.length, 5);
+  const saved = x.disk().records.filter(record => record.user.projectId); assert.equal(saved.length, 20);
+  assert.ok(x.requests.slice(1).every(input => input.projects.length === 5));
+  assert.equal(x.disk().organization.status, 'error');
+  const priorCalls = x.requests.length; rejectExtra = false; x.advance(31000); await x.tick();
+  assert.equal(x.disk().records.filter(record => record.user.projectId).length, 40); assert.equal(C.groupingPlan(x.disk()).groups.length, 5);
+  assert.ok(x.requests.slice(priorCalls).every(input => input.records.every(record => !saved.some(prior => prior.id === record.id))));
+  for (const prior of saved) assert.deepEqual(x.disk().records.find(record => record.id === prior.id).user, prior.user);
+});
+
+test('manual group consolidation touches only selected records and reports excess groups outside that selection', async () => {
+  const state = groupedWorkspace(7), chosen = state.records[5], outside = state.records[6];
+  const x = await app({initial: state, model: {autoOrganize: false}, complete: projectOnlyReply});
+  const before = C.copy(x.disk().records.map(record => record.user));
+  const result = await x.call('organize-now', {ids: [chosen.id]});
+  assert.equal(C.groupingPlan(x.disk()).groups.length, 6);
+  assert.match(result.message, /6 个在用分组.*扩大筛选范围/);
+  assert.ok(x.requests.every(input => input.records.every(record => record.id === chosen.id)));
+  assert.equal(x.requests.length, 1, 'merged selections must not be sent again through ordinary type/name editing');
+  assert.deepEqual(x.disk().records.find(record => record.id === outside.id).user, before[6]);
+  x.disk().records.forEach((record, index) => {
+    if (record.id !== chosen.id) assert.deepEqual(record.user, before[index]);
+    assert.deepEqual(record.user.tags, before[index].tags); assert.equal(record.user.sessionName, before[index].sessionName);
+  });
+});
+
+test('manual consolidation completes more than 100 selected overflow records with bounded batches', async () => {
+  const state = groupedWorkspace(108), plan = C.groupingPlan(state);
+  const x = await app({initial: state, model: {autoOrganize: false}, complete: projectOnlyReply});
+  const result = await x.call('organize-now', {ids: plan.mergeIds});
+  assert.equal(result.applied, 103); assert.equal(C.groupingPlan(x.disk()).groups.length, 5);
+  assert.deepEqual(x.requests.map(input => input.records.length), [...Array(20).fill(5), 3]);
+  const ids = x.requests.flatMap(input => input.records.map(record => record.id)); assert.equal(new Set(ids).size, 103);
+});
+
+test('manual changes or revoking consent during consolidation preserve their current membership', async () => {
+  for (const revoke of [false, true]) {
+    const state = groupedWorkspace(6), record = state.records[5], gate = deferred(), started = deferred();
+    const x = await app({initial: state, local: {taskOutBridge: {url: 'http://127.0.0.1:4518', token: 'fixture'}},
+      complete: async input => {started.resolve(); await gate.promise; return projectOnlyReply(input);},
+      service: async url => response(new URL(url).pathname.endsWith('/connectors') ? {connectors: []} : {connections: [{...state.connections[0], allowAI: false, includeSummary: false, includeNaming: false}]})});
+    const running = x.tick(false); await started.promise;
+    if (revoke) await x.call('service', {method: 'PATCH', path: '/v1/connections/fixture-connection', body: {allowAI: false}});
+    else await x.call('record-edit', {id: record.id, patch: {projectId: record.user.projectId}});
+    gate.resolve(); await running;
+    assert.equal(x.disk().records.find(item => item.id === record.id).user.projectId, record.user.projectId);
+    if (revoke) {
+      assert.equal(x.requests.length, 1); assert.ok(x.disk().undo.every(entry => entry.label !== '合并分组'));
+    } else {
+      assert.equal(x.disk().records.find(item => item.id === record.id).user.manual.projectId, true);
+      assert.ok(x.requests.slice(1).every(input => input.records.every(item => item.id !== record.id)));
+    }
+  }
+});
+
+test('group consolidation saves each five-record transaction and retries only unfinished groups after the next batch fails', async () => {
+  const state = groupedWorkspace(17), original = new Map(state.records.map(record => [record.id, record.user.projectId]));
+  let count = 0;
+  const x = await app({initial: state, complete: input => ++count === 2 ? {ok: false, status: 503} : projectOnlyReply(input)});
+  await x.tick(false);
+  assert.deepEqual(x.requests.map(input => input.records.length), [5, 5]);
+  const saved = x.disk().records.filter(record => record.user.projectId !== original.get(record.id));
+  assert.equal(saved.length, 5); assert.equal(C.groupingPlan(x.disk()).groups.length, 12);
+  assert.equal(x.disk().organization.status, 'error');
+  x.advance(31000); await x.tick();
+  assert.deepEqual(x.requests.map(input => input.records.length), [5, 5, 5, 2]);
+  assert.equal(C.groupingPlan(x.disk()).groups.length, 5);
+  assert.ok(x.requests.slice(2).every(input => input.records.every(record => !saved.some(prior => prior.id === record.id))));
+  for (const prior of saved) assert.deepEqual(x.disk().records.find(record => record.id === prior.id).user, prior.user);
 });
