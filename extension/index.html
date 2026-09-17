@@ -46,6 +46,15 @@
     </section>
     <section class="board-content" aria-label="工作记录">
       <div class="section-heading"><h2 id="scope-title">当前总览</h2><div class="section-rule"></div><span id="item-count"></span></div>
+      <details id="unassigned" class="unassigned-section" data-project-drop="" open hidden>
+        <summary class="unassigned-heading">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 13 3-8h12l3 8v6H3v-6Z"/><path d="M3 13h5l2 3h4l2-3h5"/></svg>
+          <span class="unassigned-label"><strong>未归类 <span id="unassigned-count"></span></strong><span>尚未加入项目</span></span>
+          <span class="unassigned-toggle"><span class="when-open">收起</span><span class="when-closed">展开</span><span class="unassigned-chevron" aria-hidden="true">⌄</span></span>
+        </summary>
+        <p class="unassigned-hint">可拖入项目卡片，也可在详情中调整项目。</p>
+        <div id="unassigned-items" class="unassigned-items" aria-label="未归类记录"></div>
+      </details>
       <div id="board" class="project-grid" aria-live="polite"></div>
     </section>
     <footer class="board-footer"><span class="footer-brand">Task Out</span><span>给正在进行的事，一个清楚的位置。</span><span id="connection-state" class="connection-state" role="status">正在读取…</span></footer>

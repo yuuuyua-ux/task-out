@@ -5,20 +5,26 @@
   function prepare(ids,root=document) {
     const selected=new Set(ids),reduced=globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     const captured=[];
-    if(!reduced)for(const card of root.querySelectorAll('.project-card')) {
+    if(!reduced)for(const card of root.querySelectorAll('.project-card, .unassigned-items')) {
+      const bounds=card.classList?.contains('unassigned-items')?card.getBoundingClientRect():null;
       const rows=[...card.querySelectorAll('[data-record-id]')];
       const targets=rows.filter(row=>selected.has(row.dataset.recordId));
       if(!targets.length)continue;
       const capture=(node,recordIds,group=false)=>{
         const rect=node.getBoundingClientRect();
         if(rect.width<=0||rect.height<=0||rect.bottom<0||rect.top>globalThis.innerHeight) return null;
+        // The unassigned tray scrolls independently. Never animate hidden rows
+        // outside its viewport or make clipped content reappear over projects.
+        const visible=bounds?{left:Math.max(rect.left,bounds.left),top:Math.max(rect.top,bounds.top),right:Math.min(rect.right,bounds.right),bottom:Math.min(rect.bottom,bounds.bottom)}:null;
+        if(visible&&(visible.right<=visible.left||visible.bottom<=visible.top))return null;
         const clone=node.cloneNode(true);clone.removeAttribute('id');
         clone.querySelectorAll('[id]').forEach(child=>child.removeAttribute('id'));
         clone.setAttribute('aria-hidden','true');clone.inert=true;
         Object.assign(clone.style,{position:'fixed',left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',margin:'0',zIndex:'200',pointerEvents:'none',background:'var(--card, #fffdfa)',overflow:'hidden',boxSizing:'border-box'});
-        return {clone,rect,recordIds,group};
+        if(visible)clone.style.clipPath=`inset(${visible.top-rect.top}px ${rect.right-visible.right}px ${rect.bottom-visible.bottom}px ${visible.left-rect.left}px)`;
+        return {clone,rect:visible?{...visible,width:visible.right-visible.left,height:visible.bottom-visible.top}:rect,recordIds,group};
       };
-      const whole=rows.every(row=>selected.has(row.dataset.recordId))?capture(card,rows.map(row=>row.dataset.recordId),true):null;
+      const whole=!bounds&&rows.every(row=>selected.has(row.dataset.recordId))?capture(card,rows.map(row=>row.dataset.recordId),true):null;
       captured.push({whole,rows:targets.map(row=>capture(row,[row.dataset.recordId])).filter(Boolean)});
     }
     // WebAudio must be resumed in the original click, before the worker round-trip.

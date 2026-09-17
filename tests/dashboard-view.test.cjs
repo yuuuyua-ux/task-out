@@ -41,7 +41,7 @@ function dashboard(snapshot,reply,{preview=false,effects}={}) {
     search:async value=>{const target=node('#query');target.value=value;await target.listeners.input({target});},
     action:(action,dataset={})=>context.fixture.handleAction(action,{dataset}),
     tags:()=>[...node('#tags').innerHTML.matchAll(/data-tag="([^"]+)"/g)].map(match=>match[1]),
-    ids:()=>[...node('#board').innerHTML.matchAll(/data-record-id="([^"]+)"/g)].map(match=>match[1])};
+    ids:()=>[...`${node('#unassigned-items').innerHTML}${node('#board').innerHTML}`.matchAll(/data-record-id="([^"]+)"/g)].map(match=>match[1])};
 }
 const session=(id,days,projectId='recent')=>({id,kind:'session',title:id,sourceId:'fixture',sourceName:'示例来源',projectId,
   updatedAt:days===null?null:daysAgo(days),createdAt:days===null?null:daysAgo(days),tags:[]});
@@ -325,8 +325,8 @@ test('imported webpages stay visible and manually organizable without being trea
     model:{baseUrl:'https://model.example/v1',model:'fixture-model',autoOrganize:true}},()=>({ok:true,applied:1}));
   await app.refresh();
   assert.deepEqual(app.ids(),[imported.id]);
-  assert.doesNotMatch(app.node('#board').innerHTML,/未关联页签/);
-  assert.match(app.node('#board').innerHTML,/<a class="entry-title"[^>]*data-action="open"/);
+  assert.doesNotMatch(app.node('#unassigned-items').innerHTML,/未关联页签/);
+  assert.match(app.node('#unassigned-items').innerHTML,/<a class="entry-title"[^>]*data-action="open"/);
   await app.action('settings');assert.match(app.node('#dialog').innerHTML,/历史网页 · 1 条/);
   await app.action('unbound');assert.deepEqual(app.ids(),['old-browser-tab']);
   await app.clickFilter({scope:'active'});await app.action('organize-now');

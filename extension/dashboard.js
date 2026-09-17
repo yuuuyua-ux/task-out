@@ -134,9 +134,18 @@
     const rows=visibleItems(),roots=state.items.filter(i=>i.kind==='session'&&!i.parentId),recent=roots.filter(i=>dateValue(i.createdAt)>=Date.now()-7*86400000&&dateValue(i.createdAt)<=Date.now()),unknown=roots.filter(i=>!dateValue(i.createdAt)).length;
     $('#stats').innerHTML=`<span>${extension?'人工整理优先保存 · 来源更新不会覆盖':'预览内容仅保留在本页'}${state.model.model?` · 模型 ${esc(state.model.model)}`:' · 尚未配置模型'}${state.historyExcluded?` · ${Number(state.historyExcluded)} 条会话不在获取范围`:''}</span><span>近 7 天发起的对话 <strong>${recent.length}</strong> · 对话创建时间未知 <strong>${unknown}</strong></span>`;
     $('#scope-title').textContent=scopeLabels[ui.scope];$('#item-count').textContent=`${rows.length} 条${ui.scope==='recent'?' · 包含已归档':''}`;
-    const groups=new Map();
-    for(const i of rows){const id=ui.grouping==='project'?(i.projectId||''):(i.sourceId||'unknown');if(!groups.has(id)){const project=state.projects.find(p=>p.id===id);groups.set(id,{id,name:ui.grouping==='project'?(project?.name||'未归类'):sourceName(i),color:ui.grouping==='source'?sourceColor(TaskOutCore.sourceAppearance(state,i).color):project?.color||'#cdbb9b',rows:[]});}groups.get(id).rows.push(i);}
-    $('#board').innerHTML=groups.size?[...groups.values()].map(cardHTML).join(''):`<div class="board-empty"><h3>${state.items.length?'没有符合条件的记录':'从一页清楚的总览开始'}</h3><p>${state.items.length?'调整筛选条件，或在设置的数据管理中查看历史网页。':extension?'打开的网页将出现在这里。你也可以在设置中连接会话来源。':'在设置中导入记录，预览整理效果。'}</p>${state.items.length?'<button data-action="reset-filters">重置筛选</button>':''}</div>`;
+    const groups=new Map(),unassigned=[];
+    for(const i of rows){
+      if(ui.grouping==='project'&&!i.projectId){unassigned.push(i);continue;}
+      const id=ui.grouping==='project'?i.projectId:(i.sourceId||'unknown');if(!groups.has(id)){const project=state.projects.find(p=>p.id===id);groups.set(id,{id,name:ui.grouping==='project'?(project?.name||'未命名项目'):sourceName(i),color:ui.grouping==='source'?sourceColor(TaskOutCore.sourceAppearance(state,i).color):project?.color||'#cdbb9b',rows:[]});}groups.get(id).rows.push(i);
+    }
+    // Keep unassigned records outside the project masonry. Updating only the
+    // contents preserves the user's native details open/closed state on sync.
+    $('#unassigned').hidden=!unassigned.length;
+    $('#unassigned-count').textContent=`${unassigned.length} 条`;
+    $('#unassigned-items').innerHTML=unassigned.map(rowHTML).join('');
+    $('#board').hidden=!groups.size&&!!unassigned.length;
+    $('#board').innerHTML=groups.size?[...groups.values()].map(cardHTML).join(''):unassigned.length?'':`<div class="board-empty"><h3>${state.items.length?'没有符合条件的记录':'从一页清楚的总览开始'}</h3><p>${state.items.length?'调整筛选条件，或在设置的数据管理中查看历史网页。':extension?'打开的网页将出现在这里。你也可以在设置中连接会话来源。':'在设置中导入记录，预览整理效果。'}</p>${state.items.length?'<button data-action="reset-filters">重置筛选</button>':''}</div>`;
     boardLayout?.update();
     if(detail.open){const item=itemById(detail.dataset.id),header=$('.detail-top',detail);if(item&&header)header.innerHTML=`${sourceIcon(item)} ${esc(sourceName(item))} · ${status(item).text}`;}
     const migration=state.migration||{};$('#migration').hidden=!migration.pending;$('#migration').innerHTML=migration.pending?'<div class="notice">发现上一版的主题与稍后查看记录。可先预览，再迁移为项目和归档记录。<button data-action="migration">预览迁移</button><button data-action="migration-skip">暂不迁移</button></div>':'';
@@ -832,7 +841,7 @@
   document.addEventListener('dragover',event=>{const card=event.target.closest('[data-project-drop]');if(!card||card.dataset.projectDrop==='__none__'||!Array.from(event.dataTransfer.types).includes('application/x-task-out-record'))return;event.preventDefault();event.dataTransfer.dropEffect='move';card.classList.add('drop-target');});
   document.addEventListener('dragleave',event=>{const card=event.target.closest('[data-project-drop]');if(card&&!card.contains(event.relatedTarget))card.classList.remove('drop-target');});
   document.addEventListener('dragend',()=>$$('.drop-target').forEach(c=>c.classList.remove('drop-target')));
-  document.addEventListener('drop',async event=>{const card=event.target.closest('[data-project-drop]');$$('.drop-target').forEach(c=>c.classList.remove('drop-target'));if(!card||card.dataset.projectDrop==='__none__')return;const id=event.dataTransfer.getData('application/x-task-out-record');if(!id||!itemById(id))return;event.preventDefault();try{await mutate('record-edit',{id,patch:{projectId:card.dataset.projectDrop}},'已移动到项目，人工归属会保留');}catch(error){showToast(error.message,true);}});
+  document.addEventListener('drop',async event=>{const card=event.target.closest('[data-project-drop]');$$('.drop-target').forEach(c=>c.classList.remove('drop-target'));if(!card||card.dataset.projectDrop==='__none__')return;const id=event.dataTransfer.getData('application/x-task-out-record');if(!id||!itemById(id))return;event.preventDefault();try{await mutate('record-edit',{id,patch:{projectId:card.dataset.projectDrop}},card.dataset.projectDrop?'已移动到项目，人工归属会保留':'已移至未归类，人工归属会保留');}catch(error){showToast(error.message,true);}});
   document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key==='k'){event.preventDefault();$('#query').focus();}});
   dialog.addEventListener('cancel',event=>{if(flowActive()){event.preventDefault();exitOnboarding().catch(dialogError);return;}if(dialogMode==='ai-loading'){aiRequest++;loading=false;api('ai-cancel').catch(error=>showToast(error.message,true));}});
   for(const modal of [dialog,detail])modal.addEventListener('click',async event=>{if(event.target!==modal)return;const rect=modal.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom){if(modal===dialog&&flowActive()){try{await exitOnboarding();}catch(error){dialogError(error);}return;}if(modal===dialog&&dialogMode==='ai-loading'){aiRequest++;loading=false;api('ai-cancel').catch(error=>showToast(error.message,true));}modal.close();}});
