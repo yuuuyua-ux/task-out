@@ -1,6 +1,6 @@
 {
   "name": "task-out",
-  "version": "2.0.3",
+  "version": "2.1.0",
   "private": true,
   "description": "Local-first browser and agent conversation workspace",
   "engines": {"node": ">=24.12.0 <25"},

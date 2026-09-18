@@ -8,7 +8,7 @@ const S = require('../extension/suggestions.js');
 const clone = value => structuredClone(value);
 const deferred = () => {let resolve; const promise = new Promise(done => {resolve = done;}); return {promise, resolve};};
 const reply = data => ({ok: true, status: 200, json: async () => clone(data)});
-const modelReply = input => reply({usage: {prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, prompt_tokens_details: {cached_tokens: 0}}, choices: [{finish_reason: 'stop', message: {content: JSON.stringify({suggestions: input.records.map(item => ({recordId: item.id, patch: item.editableFields.length === 1 && item.editableFields[0] === 'summary' ? {summary: '模型提炼的进展'} : {projectName: '示例项目', tags: ['需求规划']}}))})}}]});
+const modelReply = input => reply({usage: {prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, prompt_tokens_details: {cached_tokens: 0}}, choices: [{finish_reason: 'stop', message: {content: JSON.stringify({suggestions: input.records.map(item => ({recordId: item.id, evidence:{field:'title',quote:item.title}, patch: item.editableFields.length === 1 && item.editableFields[0] === 'summary' ? {summary: '模型提炼的进展'} : item.editableFields.join() === 'projectId' ? {projectId:input.projects[0].id} : {projectName: '示例项目', tags: ['需求规划']}}))})}}]});
 function initialState() {
   const state = C.initial(), now = Date.now() - 1000;
   state.connections = [{id: 'fixture', historyDays: 30, allowAI: true, includeSummary: true, includeNaming: true}];

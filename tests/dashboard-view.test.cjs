@@ -232,23 +232,23 @@ test('one settings entry contains occasional operations while cards retain direc
   assert.match(settings,/归档当前 3 条/);
 });
 
-test('organize now applies the current eligible rows directly and blocks repeated requests while running',async()=>{
+test('organize now previews historical rows and blocks repeated requests while running',async()=>{
   let resolve;
   const gate=new Promise(done=>{resolve=done;});
   const snapshot={...fixture(),model:{baseUrl:'https://model.example/v1',model:'fixture-model',autoOrganize:true},organization:{status:'idle'}};
   snapshot.items.push({...webpage('detached-web',1),needsBinding:true});
-  const app=dashboard(snapshot,request=>request.action==='organize-now'?gate:{ok:true});await app.refresh();await app.action('settings');
+  const app=dashboard(snapshot,request=>request.action==='history-preview'?gate:{ok:true});await app.refresh();await app.action('settings');
   const first=app.action('organize-now');
   assert.equal(app.node('#organization-status').dataset.status,'running');
   assert.match(app.node('#dialog').innerHTML,/data-action="organize-now" disabled/);
   await app.action('organize-now');
-  const calls=app.requests.filter(request=>request.action==='organize-now');
+  const calls=app.requests.filter(request=>request.action==='history-preview');
   assert.equal(calls.length,1);
   assert.deepEqual(new Set(calls[0].ids),new Set(['web-old','web-no-time','session-1']));
-  resolve({ok:true,applied:3,message:'已整理 3 条'});await first;
+  resolve({ok:true,suggestions:[],excluded:[]});await first;
   assert.equal(app.node('#organization-status').dataset.status,'idle');
   assert.equal(app.requests.some(request=>['ai-preview','name-preview','ai-apply'].includes(request.action)),false);
-  assert.equal(app.node('#toast').textContent,'已整理 3 条');
+  assert.match(app.node('#dialog').innerHTML,/预览整理建议/);
 });
 
 test('unconfigured and failed organization states lead to settings without claiming model connectivity',async()=>{
@@ -257,8 +257,8 @@ test('unconfigured and failed organization states lead to settings without claim
   assert.match(app.node('#organization-status').innerHTML,/data-action="settings"/);
   assert.doesNotMatch(app.node('#organization-status').innerHTML,/已连接|联通|已整理/);
   await app.action('organize-now');
-  assert.match(app.node('#dialog').innerHTML,/id="model-form"/);
-  assert.equal(app.requests.some(request=>request.action==='organize-now'),false);
+  assert.match(app.node('#dialog').innerHTML,/预览整理建议/);
+  assert.equal(app.requests.some(request=>request.action==='history-preview'),true);
   await app.replace({...fixture(),model:{baseUrl:'https://model.example/v1',model:'fixture-model'},
     organization:{status:'error',message:'示例模型暂不可用'}});
   assert.equal(app.node('#organization-status').dataset.status,'error');

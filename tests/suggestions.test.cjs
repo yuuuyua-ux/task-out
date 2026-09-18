@@ -405,3 +405,13 @@ test('later batches do not send tasks whose acquisition window expired while the
   assert.equal(result.suggestions.length,20);
   assert.equal(result.excluded.some(item=>item.id==='session-20'),true);
 });
+
+test('grounded grouping accepts unresolved and rejects absent or fabricated evidence',async()=>{
+  for(const evidence of [undefined,{field:'title',quote:'not in input'},{field:'history',quote:'Example'}]){
+    const m=model([{recordId:'a',patch:{projectId:'project-a'},...(evidence?{evidence}:{})}]);
+    await assert.rejects(()=>Suggestions.run({items:[web('a')],projects,config,requireGrounding:true,fetchImpl:m.fetchImpl}),/依据/);
+  }
+  const m=model([{recordId:'a',decision:'unresolved',reason:'No supported project'}]);
+  const result=await Suggestions.run({items:[web('a')],projects,config,requireGrounding:true,fetchImpl:m.fetchImpl});
+  assert.equal(result.suggestions.length,0);assert.equal(result.excluded[0].reason,'No supported project');
+});

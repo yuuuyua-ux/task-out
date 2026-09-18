@@ -52,17 +52,18 @@ test('changing the service URL does not imply clearing the key; only the explici
   assert.equal(app.requests[1].fields.forgetKey,true);
 });
 
-test('the first model setup still requires a service and model before saving',async()=>{
+test('local automation settings save without a model but testing still requires one',async()=>{
   const app=dashboard({baseUrl:'',model:'',rules:'',hasKey:false,autoOrganize:true});
-  await assert.rejects(app.api.saveModel(),/首次配置/);
+  await assert.rejects(app.api.saveModel(true),/首次配置/);
   assert.equal(app.requests.length,0);
   assert.equal(app.permissions.length,0);
+  await app.api.saveModel();assert.equal(app.requests[0].action,'model-save');assert.equal(app.permissions.length,0);
 });
 
 test('automatic organization defaults on, saves its new setting and preserves an explicit pause',async()=>{
   const {autoOrganize,...legacy}=saved,app=dashboard(legacy);
   assert.equal(app.node('#model-auto').checked,true);
-  assert.match(app.node('#dialog').innerHTML,/新会话归类一次并补全缺失名称，已有会话只更新进展/);
+  assert.match(app.node('#dialog').innerHTML,/统一开启或关闭本地规则与模型整理/);
   assert.doesNotMatch(app.node('#dialog').innerHTML,/待确认建议，不自动应用/);
   await app.api.saveModel();
   assert.equal(app.requests[0].fields.autoOrganize,true);
@@ -80,7 +81,7 @@ test('model settings show a configurable group cap with a default of five and re
   assert.match(input,/type="number"/);
   assert.match(input,/min="1"/);assert.match(input,/max="50"/);assert.match(input,/step="1"/);
   assert.equal(app.node('#model-max-groups').value,'5');
-  assert.match(html,/自动整理时会合并超出的自动分组，人工固定归属保留/);
+  assert.match(html,/没有明确依据不强行合并，历史归属调整先预览，人工固定归属保留/);
   assert.match(html,/提高上限或手动调整固定归属/);
   await app.api.saveModel();
   assert.equal(app.requests[0].fields.maxGroups,5);
@@ -97,11 +98,11 @@ test('group cap updates are numeric and accept both supported boundaries',async(
 test('invalid group caps fail before permission requests or configuration writes',async()=>{
   for(const value of ['0','-1','1.5','51','Infinity','NaN','bad']){
     const app=dashboard(saved);app.node('#model-max-groups').value=value;
-    await assert.rejects(app.api.saveModel(),/最多分组数请填写 1–50 的整数/);
+    await assert.rejects(app.api.saveModel(true),/最多分组数请填写 1–50 的整数/);
     assert.equal(app.requests.length,0);assert.equal(app.permissions.length,0);
   }
   const app=dashboard(saved);app.node('#model-max-groups').value='';app.node('#model-max-groups').validity={badInput:true};
-  await assert.rejects(app.api.saveModel(),/最多分组数/);
+  await assert.rejects(app.api.saveModel(true),/最多分组数/);
   assert.equal(app.requests.length,0);assert.equal(app.permissions.length,0);
 });
 

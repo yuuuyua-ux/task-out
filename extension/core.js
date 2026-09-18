@@ -395,6 +395,170 @@ const TaskOutCore = (() => {
     u.revision++;
     return {id, before, after: copy(u)};
   }
+  // Learning is local workspace data. Model projections are built separately
+  // and recheck both capture-time and current source permissions.
+  const learningNorm = value => String(value || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+  const learningWords = value => [...new Set((Array.isArray(value) ? value : String(value || '').split(/[\n,，]/)).map(v => text(v, 120)).filter(Boolean))].slice(0, 30);
+  const learningGeneric = value => /^(ai|agent|agents|claude|claude code|codex|mana|ai mana|github|github\.com|google\.com|youtube\.com|docs|project|task|new|code|develop|development|implement|fix|test|research|design|update|please|help|the|and|for|with|方案|设计|开发|调研|文档|工具|项目|任务|测试|需求|产品|使用|咨询|其他|未归类|开发实现|方案设计|需求规划|调研分析|测试排障|文档整理|使用咨询)$/i.test(learningNorm(value));
+  function learningTitle(record) { if (record.kind === 'web') return record.title || ''; return record.user.alias || record.user.sessionName || record.sourceTitle || record.title || ''; }
+  function learningCanSend(record) {
+    return !!record && (record.kind === 'web' ? !record.observations.some(o => o.allowAI !== true) : record.observations.length > 0 && record.observations.every(o => o.allowAI === true)) &&
+      (record.kind === 'web' || record.sourceTitle || record.user.alias || record.observations.every(o => o.includeNaming === true));
+  }
+  function ensureLearning(state) {
+    if (!state.learning) state.learning = {version: 1, revision: 0, profiles: [], rules: [], feedback: [], metrics: {ruleAssignments: 0, modelAssignments: 0, corrections: 0}};
+    const l = state.learning;
+    l.outcomes ||= []; l.costs ||= {}; l.unknownCostRequests ||= 0; l.classificationRequests ||= 0;
+    for (const p of state.projects) {
+      const profile = l.profiles.find(x => x.id === p.id);
+      if (profile) { profile.name = p.name; profile.color = p.color; }
+      else l.profiles.push({...copy(p), description: '', keywords: [], excludes: [], urls: [], deleted: false});
+    }
+    if (!l.seeded) {
+      for (const r of state.records) if (r.user.manual?.projectId && r.user.projectId) l.feedback.push({id: uid('feedback:'), recordId: r.id, to: r.user.projectId, from: null, operationId: null, seed: true, active: true, at: Date.now(), title: text(learningTitle(r), 250), modelAllowed: !!learningCanSend(r)});
+      l.seeded = true;
+    }
+    return l;
+  }
+  function learningUrl(value) {
+    const u = new URL(value);
+    if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password || u.search || u.hash) throw Error('网址规则请填写不含账号、参数和锚点的 HTTP(S) 域名与路径。');
+    return u.origin + u.pathname.replace(/\/$/, '');
+  }
+  function learningHit(haystack, needle) {
+    const h = learningNorm(haystack), n = learningNorm(needle); if (!n) return false;
+    if (/^[\x00-\x7f]+$/.test(n)) return new RegExp('(^|[^a-z0-9_])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9_])', 'i').test(h);
+    return h.includes(n);
+  }
+  function learningRuleMatches(rule, record) {
+    const title = learningTitle(record), urls = rule.urls || [], words = rule.keywords || [];
+    if ((rule.excludes || []).some(word => learningHit(title, word))) return false;
+    return words.some(word => learningHit(title, word)) || urls.some(prefix => {
+      try { const u = new URL(record.url), p = new URL(prefix); return u.origin === p.origin && (u.pathname === p.pathname || u.pathname.startsWith(p.pathname.replace(/\/$/, '') + '/')); } catch { return false; }
+    });
+  }
+  function learningProfileSave(state, id, input) {
+    const l = ensureLearning(state), p = l.profiles.find(x => x.id === id && !x.deleted);
+    if (!p) throw Error('分组已不存在。');
+    for (const field of ['keywords', 'excludes', 'urls']) if (own(input, field)) p[field] = field === 'urls' ? learningWords(input[field]).map(learningUrl) : learningWords(input[field]);
+    if (own(input, 'description')) p.description = text(input.description, 500);
+    const idRule = 'profile-rule:' + p.id;
+    if (p.keywords.length || p.urls.length) {
+      const oldRule = l.rules.find(r => r.id === idRule);
+      const rule = {id: idRule, projectId: p.id, origin: 'user', status: 'active', keywords: copy(p.keywords), urls: copy(p.urls), excludes: copy(p.excludes)};
+      if (oldRule) { rule.status = oldRule.status; Object.assign(oldRule, rule); } else l.rules.push(rule);
+    } else { const oldRule = l.rules.find(r => r.id === idRule); if (oldRule) oldRule.status = 'paused'; }
+    l.revision++; return copy(p);
+  }
+  function learningRuleSave(state, input) {
+    const l = ensureLearning(state), old = input.id && l.rules.find(r => r.id === input.id);
+    if (input.id && !old) throw Error('规则已不存在。');
+    const projectId = input.projectId || old?.projectId, p = l.profiles.find(p => p.id === projectId && !p.deleted);
+    if (!p) throw Error('目标分组已删除。');
+    const rule = {id: old?.id || uid('rule:'), projectId, origin: 'user', status: 'active', keywords: [], excludes: [], urls: [], ...copy(old || {})};
+    for (const field of ['keywords', 'excludes', 'urls']) if (own(input, field)) rule[field] = field === 'urls' ? learningWords(input[field]).map(learningUrl) : learningWords(input[field]);
+    if (input.confirm === true) rule.origin = 'user';
+    if (input.status !== undefined) { if (!['active', 'paused', 'deleted'].includes(input.status)) throw Error('规则状态不正确。'); rule.status = input.status; }
+    if (!rule.keywords.length && !rule.urls.length) throw Error('请填写关键词或具体网址范围。');
+    if (old) Object.assign(old, rule); else l.rules.push(rule);
+    l.revision++; learningRecompute(state); return copy(rule);
+  }
+  function learningRecompute(state) {
+    const l = ensureLearning(state);
+    for (const p of l.profiles.filter(p => !p.deleted)) {
+      const positives = l.feedback.filter(f => f.active && f.to === p.id && !f.seed);
+      const candidates = new Set([...p.keywords, p.name].filter(w => !learningGeneric(w) && learningNorm(w).length >= 2));
+      for (const f of positives) for (const word of (f.title.match(/[A-Za-z][A-Za-z0-9_-]{2,}/g) || []))
+        if (!learningGeneric(word) && (learningHit(p.name, word) || p.keywords.some(k => learningHit(k, word)))) candidates.add(word);
+      for (const keyword of candidates) {
+        const supports = positives.filter(f => learningHit(f.title, keyword));
+        if (!supports.length) continue;
+        let rule = l.rules.find(r => r.origin === 'learned' && r.projectId === p.id && r.keywords.length === 1 && learningNorm(r.keywords[0]) === learningNorm(keyword));
+        if (!rule) { rule = {id: uid('rule:'), projectId: p.id, origin: 'learned', status: 'candidate', keywords: [keyword], excludes: [], urls: [], supportIds: []}; l.rules.push(rule); }
+        if (['paused', 'deleted'].includes(rule.status)) continue;
+        rule.supportIds = supports.map(f => f.id);
+        const counter = l.feedback.some(f => f.active && f.to !== p.id && learningHit(f.title, keyword));
+        const clash = l.rules.some(r => r.projectId !== p.id && r.status === 'active' && (r.keywords.some(k => learningNorm(k) === learningNorm(keyword)) || supports.some(f => { const record = find(state, f.recordId); return record && learningRuleMatches(r, record); })));
+        rule.status = new Set(supports.map(f => f.recordId)).size >= 3 && new Set(supports.map(f => f.operationId)).size >= 3 && !counter && !clash ? 'active' : 'candidate';
+      }
+    }
+    for (const rule of l.rules.filter(r => r.origin === 'learned' && r.status === 'active')) {
+      const support = l.feedback.filter(f => f.active && rule.supportIds?.includes(f.id));
+      if (new Set(support.map(f => f.recordId)).size < 3 || new Set(support.map(f => f.operationId)).size < 3 || l.feedback.some(f => f.active && f.to !== rule.projectId && rule.keywords.some(k => learningHit(f.title, k)))) rule.status = 'candidate';
+    }
+  }
+  function learningFeedback(state, record, before, operationId = uid('operation:')) {
+    const l = ensureLearning(state);
+    if (before.projectId === record.user.projectId) return null;
+    const priorRule = before.groupingEvidence?.ruleId;
+    if (priorRule) { const rule = l.rules.find(r => r.id === priorRule && r.origin === 'learned'); if (rule) rule.status = 'paused'; }
+    const supersedes = l.feedback.filter(f=>f.active && f.recordId===record.id).map(f=>f.id);
+    l.feedback.forEach(f=>{if(supersedes.includes(f.id))f.active=false;});
+    const event = {supersedes, id: uid('feedback:'), recordId: record.id, from: before.projectId, to: record.user.projectId, operationId, seed: false, active: true, at: Date.now(), title: text(learningTitle(record), 250), modelAllowed: !!learningCanSend(record)};
+    l.feedback.push(event); if (['rule','model'].includes(before.groupingEvidence?.source)) { l.metrics.corrections++; const outcome=l.outcomes.find(o=>o.id===record.id); if(outcome)outcome.corrected=true; }
+    record.user.groupingEvidence = {source: 'manual', at: event.at};
+    l.revision++; learningRecompute(state); return event.id;
+  }
+  function learningScope(record, state, options = {}) {
+    if (!groupScope(record, state, options) || record.pending) return false;
+    if (record.kind === 'web') return true;
+    return record.observations.some(o => state.connections.some(c => c.id === o.connectionId && c.enabled !== false) || record.connectorId === 'standard-import');
+  }
+  function learningMatch(state, record) {
+    const l = ensureLearning(state);
+    if (record.user.manual?.projectId) return {status: 'fixed'};
+    const eligible = l.rules.filter(r => r.status === 'active' && l.profiles.some(p => p.id === r.projectId && !p.deleted) && learningRuleMatches(r, record) &&
+      !l.profiles.find(p => p.id === r.projectId)?.excludes.some(w => learningHit(learningTitle(record), w)));
+    const user = eligible.filter(r => r.origin === 'user'), pool = user.length ? user : eligible;
+    const targets = [...new Set(pool.map(r => r.projectId))];
+    if (targets.length > 1) return {status: 'conflict', message: '多条规则指向不同分组，等待进一步判断。'};
+    if (!targets.length) return {status: 'none'};
+    return {status: 'matched', projectId: targets[0], ruleId: pool[0].id, origin: pool[0].origin, reason: pool[0].keywords.length ? '命中关键词：' + pool[0].keywords.join('、') : '命中网址规则'};
+  }
+  function learningApply(state, ids, options = {}) {
+    const l = ensureLearning(state), entries = [], excluded = [], selected = new Set(ids), suggestions = [];
+    for (const r of state.records) {
+      if (!selected.has(r.id) || !learningScope(r, state, options) || r.user.manual?.projectId || !options.history && r.user.projectId) continue;
+      if (!r.user.projectId && !l.outcomes.some(o=>o.id===r.id)) l.outcomes.push({id:r.id,source:null,corrected:false});
+      const match = learningMatch(state, r);
+      if (match.status !== 'matched') { if (match.status === 'conflict') excluded.push({id: r.id, reason: match.message}); continue; }
+      const p = l.profiles.find(p => p.id === match.projectId && !p.deleted), plan = groupingPlan(state, options);
+      if (!p || !plan.groups.some(g => g.id === p.id) && plan.groups.length >= plan.maxGroups) { excluded.push({id: r.id, reason: '规则目标没有可用分组名额，原归属保留。'}); continue; }
+      if (r.user.projectId === p.id) continue;
+      if (options.preview) {
+        suggestions.push({id: uid('suggestion:'), recordId: r.id, kind: 'local-rule', revision: r.user.revision, observedUpdatedAt: r.updatedAt, contentRevision: r.contentRevision, policyRevision: state.policyRevision, learningRevision: l.revision, patch: {projectId: p.id}, ruleId: match.ruleId, reason: match.reason}); continue;
+      }
+      if (!state.projects.some(x => x.id === p.id)) state.projects.push({id: p.id, name: p.name, color: p.color});
+      const entry = userPatch(state, r.id, {projectId: p.id}, false);
+      r.user.groupingEvidence = {previousProjectId: entry.before.projectId, source: 'rule', ruleId: match.ruleId, ruleVersion: l.revision, reason: match.reason, appliedRevision: r.user.revision};
+      entry.after = copy(r.user); entries.push(entry); l.metrics.ruleAssignments++; const outcome=l.outcomes.find(o=>o.id===r.id); if(outcome&&!outcome.source)outcome.source='rule';
+    }
+    pushUndo(state, entries, '规则归组'); return {applied: entries.length, ids: entries.map(e => e.id), excluded, suggestions};
+  }
+  function learningRollbackPreview(state, ruleId) {
+    const l = ensureLearning(state), suggestions = [];
+    for (const r of state.records) {
+      const e = r.user.groupingEvidence;
+      if (e?.source !== 'rule' || e.ruleId !== ruleId || e.appliedRevision !== r.user.revision || r.user.manual?.projectId || r.user.archived) continue;
+      if (e.previousProjectId && !l.profiles.some(p => p.id === e.previousProjectId && !p.deleted)) continue;
+      suggestions.push({id: uid('suggestion:'), recordId: r.id, kind: 'rule-rollback', ruleId, revision: r.user.revision, observedUpdatedAt: r.updatedAt, contentRevision: r.contentRevision, policyRevision: state.policyRevision, learningRevision: l.revision, patch: {projectId: e.previousProjectId || null}, reason: '撤回此规则的归组；后续有修改的记录会跳过。'});
+    }
+    return suggestions;
+  }
+  function learningModelProjects(state, projects) {
+    const l = ensureLearning(state);
+    return projects.map(p => {
+      const profile = l.profiles.find(x => x.id === p.id && !x.deleted), examples = [];
+      for (const polarity of ['positive', 'negative']) for (const f of [...l.feedback].reverse()) {
+        if (examples.filter(e => e.polarity === polarity).length >= (polarity === 'positive' ? 2 : 1)) break;
+        const r = find(state, f.recordId);
+        if (!f.active || !f.modelAllowed || !learningCanSend(r) || r?.user.projectId !== f.to || (polarity === 'positive' ? f.to !== p.id : f.from !== p.id || f.to === p.id) || examples.some(e => e.recordId === f.recordId)) continue;
+        examples.push({id: f.id, recordId: f.recordId, polarity, title: text(f.title, 160)});
+      }
+      return {...p, description: profile?.description || '', keywords: profile?.keywords || [], excludes: profile?.excludes || [], examples: examples.map(({recordId, ...e}) => e)};
+    });
+  }
+
   function rIcon(r) { return r.source.icon || '◇'; }
   function pushUndo(state, entries, label, projects = []) {
     if (!entries.length && !projects.length) return;
@@ -435,6 +599,7 @@ const TaskOutCore = (() => {
       if (JSON.stringify(previousTags) !== JSON.stringify(restoredUser.tags) &&
           (!Array.isArray(restoredUser.legacyTypeTags) || !restoredUser.legacyTypeTags.length)) restoredUser.legacyTypeTags = previousTags.filter(value => typeof value === 'string');
       record.user = restoredUser; restored++;
+      if (e.feedbackId && state.learning) { const f = state.learning.feedback.find(f => f.id === e.feedbackId); if (f) { f.active = false; for(const prior of state.learning.feedback) if(f.supersedes?.includes(prior.id) && prior.to===record.user.projectId)prior.active=true; } state.learning.revision++; learningRecompute(state); }
     }
     for (const p of entry.projects || []) {
       if (!state.records.some(r => r.user.projectId === p.id)) state.projects = state.projects.filter(x => x.id !== p.id);
@@ -444,13 +609,13 @@ const TaskOutCore = (() => {
   function applySuggestions(state, suggestions, options = {}) {
     // Quota checks can fail after an earlier item in the same preview. Stage
     // the whole application so a rejected batch never leaves partial edits.
-    const staged = {...state, projects: copy(state.projects), suggestions: copy(state.suggestions), undo: copy(state.undo),
+    const staged = {...state, learning: state.learning ? copy(state.learning) : undefined, projects: copy(state.projects), suggestions: copy(state.suggestions), undo: copy(state.undo),
       records: state.records.map(record => ({...record, user: copy(record.user)}))};
     const result = applySuggestionsInPlace(staged, suggestions, options);
     for (let index = 0; index < state.records.length; index++) {
       if (state.records[index].user.revision !== staged.records[index].user.revision) state.records[index].user = staged.records[index].user;
     }
-    state.projects = staged.projects; state.suggestions = staged.suggestions; state.undo = staged.undo;
+    state.learning = staged.learning; state.projects = staged.projects; state.suggestions = staged.suggestions; state.undo = staged.undo;
     return result;
   }
   function applySuggestionsInPlace(state, suggestions, options = {}) {
@@ -459,10 +624,25 @@ const TaskOutCore = (() => {
     for (const s of suggestions) {
       const stored = state.suggestions.find(p => p.id === s.id && p.recordId === s.recordId);
       const record = find(state, s.recordId);
-      const allowed = record && (record.kind === 'web' ? !record.observations.some(o => o.allowAI !== true) : record.observations.length > 0 && record.observations.every(o => o.allowAI === true));
+      const rollback = stored?.kind === 'rule-rollback';
+      const localRule = stored?.kind === 'local-rule';
+      const allowed = record && (localRule || rollback ? learningScope(record, state, options) : (record.kind === 'web' ? !record.observations.some(o => o.allowAI !== true) : record.observations.length > 0 && record.observations.every(o => o.allowAI === true)));
       if (!stored || !record || !allowed || record.user.archived || !withinHistory(record, state.connections) || record.user.revision !== stored.revision || record.updatedAt !== stored.observedUpdatedAt || (stored.contentRevision !== undefined && stored.contentRevision !== record.contentRevision) || (stored.policyRevision !== undefined && stored.policyRevision !== state.policyRevision)) { conflicts.push(s.recordId); continue; }
       const patch = {...s.patch};
+      if (stored.learningRevision !== undefined && stored.learningRevision !== ensureLearning(state).revision) { conflicts.push(s.recordId); continue; }
+      if (rollback && (JSON.stringify(patch) !== JSON.stringify(stored.patch) || record.user.groupingEvidence?.ruleId !== stored.ruleId || record.user.groupingEvidence?.appliedRevision !== record.user.revision)) { conflicts.push(s.recordId); continue; }
+      if (rollback && patch.projectId && !state.projects.some(p => p.id === patch.projectId)) { const p = state.learning.profiles.find(p => p.id === patch.projectId && !p.deleted); if (!p) { conflicts.push(s.recordId); continue; } state.projects.push({id:p.id,name:p.name,color:p.color}); }
+      if (localRule) {
+        const match = learningMatch(state, record);
+        if (Object.keys(patch).length !== 1 || match.status !== 'matched' || patch.projectId !== match.projectId || stored.ruleId !== match.ruleId) { conflicts.push(s.recordId); continue; }
+        if (!state.projects.some(p => p.id === patch.projectId)) {
+          const profile = state.learning.profiles.find(p => p.id === patch.projectId && !p.deleted);
+          if (!profile) { conflicts.push(s.recordId); continue; }
+          state.projects.push({id: profile.id, name: profile.name, color: profile.color});
+        }
+      }
       const merging = stored.kind === 'grouping-merge';
+      if (stored.kind === 'grouping-review' && (JSON.stringify(patch) !== JSON.stringify(stored.patch) || Object.keys(patch).some(k=>!['projectId','projectName'].includes(k)))) throw Error('历史归属预览只能应用原项目建议。');
       if (merging && (Object.keys(patch).length !== 1 || !own(patch, 'projectId') && !own(patch, 'projectName'))) throw Error('合并分组建议只能修改项目归属。');
       if (('projectId' in patch || 'projectName' in patch) && record.user.manual?.projectId) { conflicts.push(s.recordId); continue; }
       if (stored.kind === 'progress') {
@@ -481,6 +661,8 @@ const TaskOutCore = (() => {
         patch.projectId = plannedProject.id || null; delete patch.projectName;
       }
       if ('projectId' in patch) {
+        const profile = state.learning?.profiles.find(p=>p.id===patch.projectId);
+        if (profile?.deleted || profile?.excludes.some(w=>learningHit(learningTitle(record),w))) { conflicts.push(s.recordId); continue; }
         const plan = groupingPlan(state, options);
         if (merging) {
           if (plan.error) throw Object.assign(Error(plan.error.message), {code: plan.error.code});
@@ -496,7 +678,13 @@ const TaskOutCore = (() => {
       }
       // Both explicit preview application and automatic organization use the
       // same revision, permission and source-content checks above.
-      entries.push(userPatch(state, record.id, patch, false)); applied.push(stored.id);
+      const entry = userPatch(state, record.id, patch, false);
+      if ('projectId' in patch) {
+        record.user.groupingEvidence = {previousProjectId: entry.before.projectId, source: rollback ? 'rollback' : localRule ? 'rule' : 'model', ruleId: stored.ruleId || null, ruleVersion: stored.learningRevision ?? 0, reason: stored.reason || '', evidence: stored.evidence || null, appliedRevision: record.user.revision};
+        entry.after = copy(record.user);
+        if (state.learning && !rollback) { state.learning.metrics[localRule ? 'ruleAssignments' : 'modelAssignments']++; const outcome=state.learning.outcomes.find(o=>o.id===record.id); if(outcome&&!outcome.source)outcome.source=localRule?'rule':'model'; }
+      }
+      entries.push(entry); applied.push(stored.id);
     }
     pushUndo(state, entries, suggestions.length && suggestions.every(s => state.suggestions.find(p => p.id === s.id)?.kind === 'grouping-merge') ? '合并分组' : 'AI 整理', created);
     state.suggestions = state.suggestions.filter(s => !applied.includes(s.id));
@@ -597,7 +785,7 @@ const TaskOutCore = (() => {
     }
     return {records, projects, sourceStyles, warnings};
   }
-  return {COLORS, SOURCE_COLORS, SOURCE_ICONS, TYPE_LABELS, normalizeTypeTags, normalizeTypes, recordUsage, saveModelPricing, usageReport, sourceAppearance, saveSourceStyle, resetSourceStyle, initial, copy, text, time, uid, webUrl, defaultUser, normalizeRecord, find, upsert,
+  return {learningRollbackPreview, ensureLearning, learningProfileSave, learningRuleSave, learningRecompute, learningFeedback, learningMatch, learningApply, learningScope, learningModelProjects, learningCanSend, COLORS, SOURCE_COLORS, SOURCE_ICONS, TYPE_LABELS, normalizeTypeTags, normalizeTypes, recordUsage, saveModelPricing, usageReport, sourceAppearance, saveSourceStyle, resetSourceStyle, initial, copy, text, time, uid, webUrl, defaultUser, normalizeRecord, find, upsert,
     publicItem, historyWindowDays, withinHistory, groupLimit, groupScope, groupMovable, groupingPlan, saveProject, userPatch, pushUndo, pruneEmptyProjects, undo, applySuggestions, importRecords};
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = TaskOutCore;
