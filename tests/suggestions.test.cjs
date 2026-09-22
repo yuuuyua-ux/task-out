@@ -37,8 +37,8 @@ test('exports a browser global without any browser API or storage dependency', (
 });
 
 test('configuration has no vendor default or credential return and accepts local compatible models', () => {
-  assert.deepEqual(Suggestions.normalizeConfig(), { baseUrl: '', model: '', rules: '', maxGroups: 5, autoSuggest: false, autoOrganize: true });
-  assert.deepEqual(Suggestions.normalizeConfig({ ...config, apiKey: 'SECRET', extra: 'ignored' }), { ...config, maxGroups: 5, autoSuggest: false, autoOrganize: true });
+  assert.deepEqual(Suggestions.normalizeConfig(), { baseUrl: '', model: '', rules: '', maxGroups: 5, timeoutSeconds:120, autoSuggest: false, autoOrganize: true });
+  assert.deepEqual(Suggestions.normalizeConfig({ ...config, apiKey: 'SECRET', extra: 'ignored' }), { ...config, maxGroups: 5, timeoutSeconds:120, autoSuggest: false, autoOrganize: true });
   assert.equal(Suggestions.normalizeConfig({ autoOrganize: false, autoSuggest: true }).autoOrganize, false);
   assert.equal(Suggestions.normalizeConfig({ autoSuggest: true }).autoSuggest, true);
   assert.equal(Suggestions.endpoint(' https://models.example/v1/chat/completions/// '), 'https://models.example/v1');
@@ -364,7 +364,7 @@ test('connection test uses only synthetic public input and requires a real compa
     request = { url, options };
     const input = inputOf(request);
     assert.equal(input.records.length, 2); assert.equal(input.projects.length, 1);
-    return reply({ suggestions: input.records.map(item => suggestion(item.id, {projectId: input.projects[0].id})) });
+    return reply({ suggestions: input.records.map(item => ({...suggestion(item.id, {projectId: input.projects[0].id}), evidence:{field:'title',quote:item.title}})) });
   } });
   assert.deepEqual(result, { ok: true });
   assert.equal(request.options.body.includes('PRIVATE_CLASSIFICATION_RULES'), false);
@@ -382,7 +382,7 @@ test('connection test uses only synthetic public input and requires a real compa
   }}));
   const newGroup = await Suggestions.testConnection({config, fetchImpl: async (_url, options) => {
     const input = inputOf({options});
-    return reply({suggestions: input.records.map(item => suggestion(item.id, {projectName: '公开示例新项目'}))});
+    return reply({suggestions: input.records.map(item => ({...suggestion(item.id, {projectName: '公开示例新项目'}), evidence:{field:'title',quote:item.title}}))});
   }});
   assert.deepEqual(newGroup, {ok: true});
 });
@@ -414,4 +414,72 @@ test('grounded grouping accepts unresolved and rejects absent or fabricated evid
   const m=model([{recordId:'a',decision:'unresolved',reason:'No supported project'}]);
   const result=await Suggestions.run({items:[web('a')],projects,config,requireGrounding:true,fetchImpl:m.fetchImpl});
   assert.equal(result.suggestions.length,0);assert.equal(result.excluded[0].reason,'No supported project');
+});
+
+test('grounding failure retries once with the same authorized input and an evidence-bearing schema',async()=>{
+  const requests=[],usage=[];
+  const result=await Suggestions.run({items:[web('a')],projects,config,requireGrounding:true,onUsage:e=>usage.push(e),fetchImpl:async(_url,options)=>{
+    const body=JSON.parse(options.body),input=JSON.parse(body.messages[1].content);requests.push(body);
+    assert.ok(body.messages[0].content.includes('"evidence":{"field":"title","quote":'));
+    return reply({suggestions:[{recordId:'a',patch:{projectId:input.projects[0].id},...(requests.length===2?{evidence:{field:'title',quote:input.records[0].title}}:{})}]});
+  }});
+  assert.equal(requests.length,2);assert.equal(usage.length,2);assert.equal(result.suggestions.length,1);
+  assert.equal(requests[0].messages[1].content,requests[1].messages[1].content);
+  assert.ok(requests[1].messages[0].content.includes('evidence'));
+});
+
+test('missing evidence cannot pass the synthetic connection test and retries are bounded',async()=>{
+  let calls=0;await assert.rejects(()=>Suggestions.testConnection({config,fetchImpl:async(_url,options)=>{
+    calls++;const input=inputOf({options});return reply({suggestions:input.records.map(r=>({recordId:r.id,patch:{projectId:input.projects[0].id}}))});
+  }}),error=>error.code==='INVALID_GROUP_EVIDENCE');assert.equal(calls,2);
+});
+
+test('grounded format repair uses a static failure description, never the rejected response',async()=>{
+  const requests=[];
+  const result=await Suggestions.run({items:[web('a')],projects,config,requireGrounding:true,fetchImpl:async(_url,options)=>{
+    const body=JSON.parse(options.body);requests.push(body);
+    if(requests.length===1)return reply({suggestions:[{recordId:'a',decision:'unresolved',reason:'UNTRUSTED_DO_NOT_ECHO',patch:{}}]});
+    assert.match(body.messages[0].content,/unresolved 只能包含/);
+    assert.equal(JSON.stringify(body).includes('UNTRUSTED_DO_NOT_ECHO'),false);
+    return reply({suggestions:[{recordId:'a',decision:'unresolved',reason:'没有合适项目'}]});
+  }});
+  assert.equal(requests.length,2);assert.equal(result.excluded.length,1);
+  assert.equal(requests[0].messages[1].content,requests[1].messages[1].content);
+});
+
+test('format repair is bounded and never accepts a forbidden rename',async()=>{
+  const m=model([{recordId:'a',patch:{sessionName:'非法改名'}}]);
+  await assert.rejects(()=>Suggestions.run({items:[web('a')],projects,config,requireGrounding:true,fetchImpl:m.fetchImpl}),e=>e.code==='INVALID_MODEL_FORMAT'&&e.message.includes('不能返回 sessionName'));
+  assert.equal(m.requests.length,2);
+});
+
+test('unnamed sessions can ground grouping in authorized naming excerpts, never withheld or generated text',async()=>{
+  const item=session('unnamed',{titleBasis:'first-message',sourceTitle:'',needsSessionName:true,
+    firstMessage:'设计虚构星图项目',latestMessage:'补充星图的布局',
+    observations:[{allowAI:true,includeSummary:false,includeNaming:true}]});
+  for(const field of ['namingContext.firstMessage','namingContext.latestMessage']){
+    const quote=field.endsWith('firstMessage')?item.firstMessage:item.latestMessage;
+    const m=model([{recordId:item.id,patch:{projectId:'project-a',sessionName:'星图方案'},evidence:{field,quote}}]);
+    const result=await Suggestions.run({items:[item],projects,config,requireGrounding:true,requireNames:true,fetchImpl:m.fetchImpl});
+    assert.equal(result.suggestions.length,1);assert.equal(m.requests.length,1);
+    assert.equal(result.suggestions[0].evidence.field,field);
+  }
+  for(const [modified,evidence] of [
+    [{...item,observations:[{allowAI:true,includeNaming:false}]},{field:'namingContext.firstMessage',quote:item.firstMessage}],
+    [item,{field:'summary',quote:item.summary}],
+    [item,{field:'sessionName',quote:'星图方案'}],
+    [item,{field:'namingContext.firstMessage',quote:'模型编造的项目名称'}]
+  ]){
+    const m=model([{recordId:item.id,patch:{projectId:'project-a'},evidence}]);
+    await assert.rejects(()=>Suggestions.run({items:[modified],projects,config,requireGrounding:true,fetchImpl:m.fetchImpl}),e=>e.code==='INVALID_GROUP_EVIDENCE');
+  }
+});
+
+test('configurable deadline is validated and cancellation still clears the timer',async()=>{
+ for(const bad of [0,29,601,1.5,'300',true])assert.throws(()=>Suggestions.normalizeConfig({...config,timeoutSeconds:bad}));
+ let fire,delay,cleared=false;
+ const context={URL,AbortController,DOMException,setTimeout(fn,ms){fire=fn;delay=ms;return 1;},clearTimeout(){cleared=true;}};
+ vm.createContext(context);vm.runInContext(fs.readFileSync('extension/suggestions.js','utf8'),context);
+ const pending=context.TaskOutSuggestions.run({items:[web('deadline')],config:{...config,timeoutSeconds:300},fetchImpl:()=>new Promise(()=>{})});
+ assert.equal(delay,300000);fire();await assert.rejects(pending,e=>e.name==='TimeoutError'&&e.message.includes('300'));assert.equal(cleared,true);
 });

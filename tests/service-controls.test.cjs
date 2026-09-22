@@ -14,7 +14,7 @@ async function background(fetchImpl, paired=true) {
   const storage=data=>({get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,clone(data[k])])),set:async value=>Object.assign(data,clone(value)),setAccessLevel:async()=>{}});
   const event=()=>({addListener(){}});
   const context={console,URL,crypto,structuredClone,AbortController,AbortSignal,DOMException,setTimeout:()=>0,clearTimeout(){},
-    TaskOutCore:Core,TaskOutSuggestions:Suggestions,TaskOutStore:{read:async()=>clone(disk),write:async value=>{disk=clone(value);}},
+    TaskOutCore:Core,TaskOutModelLifetime:require('../extension/model-lifetime.js'),TaskOutSuggestions:Suggestions,TaskOutStore:{read:async()=>clone(disk),write:async value=>{disk=clone(value);}},
     importScripts(){},fetch:fetchImpl,chrome:{storage:{local:storage(local),session:storage(session)},permissions:{contains:async()=>true},
       runtime:{id:'a'.repeat(32),sendMessage:async()=>{},getURL:p=>'chrome-extension://fixture/'+p,onMessage:event(),onStartup:event(),onInstalled:event()},
       tabs:{query:async()=>[],onCreated:event(),onUpdated:event(),onRemoved:event(),onActivated:event()},windows:{onFocusChanged:event()},

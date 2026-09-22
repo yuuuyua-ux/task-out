@@ -81,8 +81,8 @@ test('model settings show a configurable group cap with a default of five and re
   assert.match(input,/type="number"/);
   assert.match(input,/min="1"/);assert.match(input,/max="50"/);assert.match(input,/step="1"/);
   assert.equal(app.node('#model-max-groups').value,'5');
-  assert.match(html,/没有明确依据不强行合并，历史归属调整先预览，人工固定归属保留/);
-  assert.match(html,/提高上限或手动调整固定归属/);
+  assert.match(html,/这是整理目标，不是硬上限/);
+  assert.match(html,/不同项目可新建并超过目标/);
   await app.api.saveModel();
   assert.equal(app.requests[0].fields.maxGroups,5);
   assert.equal(dashboard(saved).node('#model-max-groups').value,'9');
@@ -98,11 +98,11 @@ test('group cap updates are numeric and accept both supported boundaries',async(
 test('invalid group caps fail before permission requests or configuration writes',async()=>{
   for(const value of ['0','-1','1.5','51','Infinity','NaN','bad']){
     const app=dashboard(saved);app.node('#model-max-groups').value=value;
-    await assert.rejects(app.api.saveModel(true),/最多分组数请填写 1–50 的整数/);
+    await assert.rejects(app.api.saveModel(true),/期望分组数请填写 1–50 的整数/);
     assert.equal(app.requests.length,0);assert.equal(app.permissions.length,0);
   }
   const app=dashboard(saved);app.node('#model-max-groups').value='';app.node('#model-max-groups').validity={badInput:true};
-  await assert.rejects(app.api.saveModel(true),/最多分组数/);
+  await assert.rejects(app.api.saveModel(true),/期望分组数/);
   assert.equal(app.requests.length,0);assert.equal(app.permissions.length,0);
 });
 

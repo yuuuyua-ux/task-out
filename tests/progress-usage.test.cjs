@@ -147,7 +147,7 @@ test('batch usage has actual record counts and testConnection reports public cla
   const testEvents = [];
   await S.testConnection({config, onUsage: event => testEvents.push(event), fetchImpl: async (_url, options) => {
     assert.equal(options.body.includes('PRIVATE_GROUPING_PREFERENCE'), false); const input = inputOf(options);
-    return response(input.records.map(item => patch(item.id, {projectId: input.projects[0].id})), {total_tokens: 11});
+    return response(input.records.map(item => ({...patch(item.id, {projectId: input.projects[0].id}),evidence:{field:'title',quote:item.title}})), {total_tokens: 11});
   }});
   assert.equal(testEvents.length, 1); assert.equal(testEvents[0].purpose, 'test'); assert.equal(testEvents[0].trigger, 'manual'); assert.equal(testEvents[0].recordCount, 2);
 });
@@ -211,7 +211,7 @@ test('request snapshot failures and pre-fetch cancellation never invent charged 
 test('connection tests forward the request snapshot hook before classification fetch', async () => {
   const starts = [], events = [];
   await S.testConnection({config, onRequest: request => starts.push(request), onUsage: event => events.push(event),
-    fetchImpl: async (_url, options) => {assert.equal(starts.length, 1); const input = inputOf(options); return response(input.records.map(item => patch(item.id, {projectId: input.projects[0].id})));}});
+    fetchImpl: async (_url, options) => {assert.equal(starts.length, 1); const input = inputOf(options); return response(input.records.map(item => ({...patch(item.id, {projectId: input.projects[0].id}),evidence:{field:'title',quote:item.title}})));}});
   assert.equal(events.length, 1); assert.equal(events[0].id, starts[0].id); assert.equal(events[0].at, starts[0].at);
   assert.equal(events[0].purpose, 'test');
 });

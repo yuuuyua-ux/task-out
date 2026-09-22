@@ -5,6 +5,14 @@ const vm = require('node:vm');
 const Core = require('../extension/core.js');
 
 const NOW = Date.parse('2026-09-17T12:00:00Z');
+
+test('invalid grounding is explained as rejected model evidence rather than an unknown outage', async()=>{
+  const app=dashboard({...fixture(),model:{baseUrl:'https://model.example/v1',model:'fixture'},organization:{status:'error',message:'分组建议缺少可核对的输入依据，当前批次未应用。'}});
+  await app.refresh();
+  assert.match(app.node('#organization-status').innerHTML,/模型归组依据缺失或无法核对/);
+  await app.action('settings');
+  assert.match(app.node('#dialog').innerHTML,/这一批未应用/);
+});
 const daysAgo = days => NOW - days * 86400000;
 class FixtureDate extends Date {
   constructor(...values) { super(...(values.length ? values : [NOW])); }
@@ -628,10 +636,10 @@ test('suggestion review edits one canonical type rather than accepting comma-sep
 test('settings summarize the configured AI group cap and the preview exports the same default',async()=>{
   const app=dashboard({...fixture(),model:{baseUrl:'https://model.example/v1',model:'fixture-model',maxGroups:12}});
   await app.refresh();await app.action('settings');
-  assert.match(app.node('#dialog').innerHTML,/AI 最多 12 个分组/);
+  assert.match(app.node('#dialog').innerHTML,/期望约 12 个分组/);
   const preview=dashboard({},undefined,{preview:true});
   await preview.refresh();await preview.action('settings');
-  assert.match(preview.node('#dialog').innerHTML,/AI 最多 5 个分组/);
+  assert.match(preview.node('#dialog').innerHTML,/期望约 5 个分组/);
   const snapshot=await preview.request('snapshot');
   assert.equal(snapshot.state.model.maxGroups,5);
   const exported=await preview.request('export',{mode:'config'});
@@ -644,7 +652,7 @@ test('protected group overflow points to cap or manual assignment changes withou
   await app.refresh();await app.action('settings');
   assert.match(app.node('#organization-status').innerHTML,/需保留的分组数超过上限/);
   const html=app.node('#dialog').innerHTML,error=html.match(/<div class="organization-error"[^>]*>([\s\S]*?)<\/div>/)[1];
-  assert.match(error,/提高“最多分组数”/);assert.match(error,/手动将这些记录归入其他项目/);
+  assert.match(error,/提高“期望分组数”/);assert.match(error,/手动将这些记录归入其他项目/);
   assert.match(error,/固定归属不会自动改动/);assert.ok(error.includes(message));
   assert.doesNotMatch(error,/服务兼容性|接口地址|无法连接|更换模型/);
   assert.equal(app.requests.every(request=>request.action==='snapshot'),true);

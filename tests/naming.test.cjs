@@ -197,7 +197,7 @@ async function boot(initial) {
   const storage = value => ({ get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, clone(value[key])])),
     set: async patch => Object.assign(value, clone(patch)), remove: async keys => { for (const key of Array.isArray(keys) ? keys : [keys]) delete value[key]; }, setAccessLevel: async () => {} });
   const context = { URL, crypto, structuredClone, AbortController, AbortSignal, DOMException, console, setTimeout: () => 0, clearTimeout() {},
-    TaskOutCore: C, TaskOutSuggestions: S, TaskOutStore: { read: async () => clone(disk), write: async state => { disk = clone(state); } }, importScripts() {},
+    TaskOutCore: C, TaskOutModelLifetime:require('../extension/model-lifetime.js'),TaskOutSuggestions: S, TaskOutStore: { read: async () => clone(disk), write: async state => { disk = clone(state); } }, importScripts() {},
     fetch: async () => { throw Error('No network in naming persistence test'); },
     chrome: { storage: { local: storage(local), session: storage(session) }, permissions: { contains: async () => true },
       runtime: { id: 'a'.repeat(32), getURL: p => 'chrome-extension://' + 'a'.repeat(32) + '/' + p, sendMessage: async () => {}, onMessage: event(), onStartup: event(), onInstalled: event() },

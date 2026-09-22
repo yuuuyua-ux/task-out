@@ -1,5 +1,5 @@
 'use strict';
-importScripts('core.js', 'store.js', 'suggestions.js');
+importScripts('core.js', 'store.js', 'suggestions.js', 'model-lifetime.js');
 const C = TaskOutCore;
 let state, epoch, ready, queue = Promise.resolve(), aiJob = null, syncJob = null;
 let scheduleTimer;
@@ -8,6 +8,9 @@ let serviceQueue = Promise.resolve();
 let modelQueue = Promise.resolve();
 let serviceStopping = false;
 let modelChanging = 0, organizationJob = null;
+// Only keep the MV3 worker awake while a bounded model operation is pending.
+const runModel = options => TaskOutModelLifetime.run(() => TaskOutSuggestions.run(options));
+const testModel = options => TaskOutModelLifetime.run(() => TaskOutSuggestions.testConnection(options));
 const SYNC_INTERVALS = [0, 30, 60, 120, 300];
 const ONBOARDING_STEPS = ['start', 'pair', 'discover', 'preview', 'enable', 'done'];
 function onboardingDraft(input) {
@@ -99,7 +102,7 @@ async function initialize() {
   state.onboardingRevision = Number.isSafeInteger(state.onboardingRevision) ? state.onboardingRevision : 0;
   C.normalizeTypes(state);
   C.ensureLearning(state);
-  if (state.organization.status === 'running') state.organization = {...state.organization, status: 'idle', message: '上次整理未完成，将继续检查未处理的内容。'};
+  if (state.organization.status === 'running') state.organization = {...state.organization, status: 'error', code: 'WORKER_INTERRUPTED', retryAt: Date.now() + 30000, message: '浏览器后台中断了上次整理，保留已完成的结果。稍后会检查未处理内容，也可手动重试。'};
   const session = await chrome.storage.session.get(['taskOutEpoch', 'aiView']);
   epoch = session.taskOutEpoch || crypto.randomUUID();
   await chrome.storage.session.set({taskOutEpoch: epoch});
@@ -139,7 +142,7 @@ async function publicSnapshot() {
   return {state: {
     learning: C.copy(state.learning), projects: C.copy(state.projects), sourceStyles: C.copy(state.sourceStyles), items: visible, historyExcluded: items.filter(r => !r.parentId && !r.archived && r.outsideHistoryRange).length, connections: C.copy(state.connections), connectors: C.copy(state.connectors),
     migration: C.copy(state.migration), bridge: C.copy(state.bridge), suggestions: C.copy(state.suggestions.filter(s => visibleIds.has(s.recordId))), suggestionExcluded: C.copy(state.suggestionExcluded),
-    model: {...model, apiKey: undefined, hasKey: !!model.apiKey}, syncSettings: C.copy(state.syncSettings), onboarding: C.copy(state.onboarding), organization: organizationStatus(model), undoAvailable: state.undo.length > 0
+    groupOverview: {referenceCount: groupingPlan(state, model).groups.length}, model: {...model, apiKey: undefined, hasKey: !!model.apiKey}, syncSettings: C.copy(state.syncSettings), onboarding: C.copy(state.onboarding), organization: organizationStatus(model), undoAvailable: state.undo.length > 0
   }};
 }
 function bridgeUrl(value) {
@@ -445,6 +448,10 @@ async function saveModel(message) {
     if (!['string', 'number'].includes(typeof message.maxGroups)) throw Error('最多分组数需为 1 到 50 的整数。');
     patch.maxGroups = C.groupLimit(Number(message.maxGroups));
   }
+  if (message.timeoutSeconds !== undefined && message.timeoutSeconds !== null && String(message.timeoutSeconds).trim() !== '') {
+    if (!['number','string'].includes(typeof message.timeoutSeconds)) throw Error('模型等待时间需为 30 到 600 秒的整数。');
+    patch.timeoutSeconds = Number(message.timeoutSeconds);
+  }
   const next = TaskOutSuggestions.normalizeConfig({...old, ...patch});
   const localOnly = !old.model && !next.model && (typeof message.autoOrganize === 'boolean' || message.maxGroups !== undefined);
   if ((!next.baseUrl || !next.model) && !localOnly) throw Error('首次配置请填写模型服务地址和模型名称；已有配置留空表示不变。');
@@ -490,7 +497,7 @@ async function runSuggestions(ids, automatic = false, namingOnly = false) {
         learningRevision: state.learning.revision, projects: namingOnly ? [] : groupingProjects(state, config), groupOnly, allowNewProjects: !groupOnly, policyRevision: state.policyRevision || 0};
     });
     const signatures = new Map(snapshot.items.map(item => [item.id, suggestionSignature(item, config, snapshot.policyRevision)]));
-    const result = await TaskOutSuggestions.run({...snapshot, config, apiKey: config.apiKey, signal: controller.signal, namingOnly, requireGrounding: !namingOnly, ...makeUsageRecorder(), purpose: namingOnly ? 'naming' : 'grouping', trigger: automatic ? 'automatic' : 'manual'});
+    const result = await runModel({...snapshot, config, apiKey: config.apiKey, signal: controller.signal, namingOnly, requireGrounding: !namingOnly, ...makeUsageRecorder(), purpose: namingOnly ? 'naming' : 'grouping', trigger: automatic ? 'automatic' : 'manual'});
     if (controller.signal.aborted) throw Error('整理已取消。');
     return await enqueue(() => change(next => {
       if (policyChanging || next.learning.revision !== snapshot.learningRevision || (next.policyRevision || 0) !== snapshot.policyRevision) throw Error('来源许可已变化，请重新生成建议。');
@@ -537,7 +544,7 @@ function organizationInput(record, config, next, progressOnly = false) {
 function organizationSignature(record, config, next = state, progressOnly = false) {
   const {input} = organizationInput(record, config, next, progressOnly);
   const content = input ? {kind: input.kind, title: input.title, url: input.url, summary: input.summary, namingContext: input.namingContext} : null;
-  return JSON.stringify([config.baseUrl, config.model, progressOnly ? '' : config.rules, progressOnly ? null : config.maxGroups, progressOnly ? null : next.learning?.revision, next.policyRevision, content, !input && !progressOnly ? [record.title,record.sourceTitle,record.user.alias,record.user.sessionName,record.url,record.contentRevision] : null]);
+  return JSON.stringify([config.baseUrl, config.model, progressOnly ? '' : 'group-target-v3:' + config.rules, progressOnly ? null : config.maxGroups, progressOnly ? null : next.learning?.revision, next.policyRevision, content, !input && !progressOnly ? [record.title,record.sourceTitle,record.user.alias,record.user.sessionName,record.url,record.contentRevision] : null]);
 }
 function organizationCandidates(config, next = state) {
   const now = Date.now(), seconds = syncInterval(next);
@@ -605,10 +612,10 @@ async function runOrganization(ids, automatic = false, {progressOnly = false} = 
       // Missing names add first/latest excerpts and an extra output field.
       // Commit bounded batches so one long or failed reply cannot discard
       // other batches that have already completed.
-      const batchSize = !progress && group.some(r => organizationInput(r, config, state).input?.namingContext) ? 5 : 20;
+      const batchSize = !progress && group.some(r => organizationInput(r, config, state).input?.namingContext) ? 2 : 20;
       for (let offset = 0; offset < group.length; offset += batchSize) jobs.push({progress, ids: new Set(group.slice(offset, offset + batchSize).map(r => r.id))});
     }
-    await enqueue(() => change(next => { next.organization = {...next.organization, status: 'running', message: progressOnly ? '正在更新会话进展…' : '正在处理新内容与会话进展…'}; }));
+    await enqueue(() => change(next => { next.organization = {...next.organization, status: 'running', startedAt: Date.now(), code: next.organization.code === 'GROUP_LIMIT_PROTECTED' ? next.organization.code : null, message: progressOnly ? '正在更新会话进展…' : '正在处理新内容与会话进展…'}; }));
     for (const job of jobs) {
       if (controller.signal.aborted) throw new DOMException('整理已取消。', 'AbortError');
       const snapshot = await enqueue(() => {
@@ -619,7 +626,7 @@ async function runOrganization(ids, automatic = false, {progressOnly = false} = 
         return {items: records.map(r => organizationInput(r, config, state, job.progress).item), learningRevision: state.learning.revision, projects: job.progress ? [] : groupingProjects(state, config), policyRevision: state.policyRevision || 0,
           signatures: new Map(records.map(r => [r.id, organizationSignature(r, config, state, job.progress)]))};
       });
-      const result = await TaskOutSuggestions.run({...snapshot, config, apiKey: config.apiKey, signal: controller.signal,
+      const result = await runModel({...snapshot, config, apiKey: config.apiKey, signal: controller.signal,
         requireGrounding: !job.progress, progressOnly: job.progress, requireNames: !job.progress, ...makeUsageRecorder(),
         purpose: job.progress ? 'progress' : 'grouping', trigger: automatic ? 'automatic' : 'manual'});
       if (controller.signal.aborted) throw new DOMException('整理已取消。', 'AbortError');
@@ -663,7 +670,7 @@ async function runOrganization(ids, automatic = false, {progressOnly = false} = 
     }
     const remainingPlan = groupingPlan(state, config);
     let message = applied ? `${progressOnly ? '已更新进展' : '已整理'} ${applied} 条内容，可撤销。` : conflicts ? '部分内容已变化，已保留新修改。' : '当前内容已检查，无需调整。';
-    if (!progressOnly && remainingPlan.overLimit) message += ` 当前仍有 ${remainingPlan.groups.length} 个在用分组，上限为 ${remainingPlan.maxGroups}；没有明确归属依据的分组已保留。可预览历史调整或提高上限，不会强行合并。`;
+    if (!progressOnly && remainingPlan.overLimit) message += ` 当前仍有 ${remainingPlan.groups.length} 个在用分组，整理目标为 ${remainingPlan.maxGroups}（含获取范围内的历史项目）；允许不同项目超过目标，不强行合并。`;
     await enqueue(() => change(next => { next.organization = {...next.organization, status: 'idle', message}; }));
     continueAutomatic = (automatic || progressOnly && config.autoOrganize) && organizationCandidates(config).length > 0;
     return {applied, conflicts, message};
@@ -699,7 +706,7 @@ async function historyPreview(ids) {
     let result={suggestions:[],excluded:[]};
     if(config.baseUrl&&config.model&&snapshot.items.length&&snapshot.projects.length){
       await permission(config.baseUrl);
-      result=await TaskOutSuggestions.run({...snapshot,config,apiKey:config.apiKey,signal:controller.signal,groupOnly:true,requireGrounding:true,allowNewProjects:false,...makeUsageRecorder(),purpose:'grouping',trigger:'manual'});
+      result=await runModel({...snapshot,config,apiKey:config.apiKey,signal:controller.signal,groupOnly:true,requireGrounding:true,allowNewProjects:false,...makeUsageRecorder(),purpose:'grouping',trigger:'manual'});
     }
     if(controller.signal.aborted)throw new DOMException('预览已取消。','AbortError');
     return await enqueue(()=>change(next=>{
@@ -798,7 +805,7 @@ async function dispatch(message) {
   }
   if (action === 'model-test') {
     const cfg = await modelConfig(); await permission(cfg.baseUrl);
-    await TaskOutSuggestions.testConnection({config: cfg, apiKey: cfg.apiKey, ...makeUsageRecorder()});
+    await testModel({config: cfg, apiKey: cfg.apiKey, ...makeUsageRecorder()});
     return {message: '模型连接与示例分类测试通过（仅使用虚构数据，不代表所有真实内容的分类效果）。'};
   }
   if (action === 'pair') {

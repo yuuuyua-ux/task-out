@@ -33,7 +33,7 @@ function app(options = {}) {
   class Clock extends Date {static now() {return clock;}}
   const context = {console, URL, crypto, Date: Clock, structuredClone, DOMException, AbortController, AbortSignal,
     importScripts() {}, setTimeout: fn => {timer = fn; return 1;}, clearTimeout: () => {timer = null;},
-    TaskOutCore: C, TaskOutSuggestions: {...S, run: args => S.run({...args, fetchImpl}), testConnection: args => S.testConnection({...args, fetchImpl})},
+    TaskOutCore: C, TaskOutModelLifetime:require('../extension/model-lifetime.js'),TaskOutSuggestions: {...S, run: args => S.run({...args, fetchImpl}), testConnection: args => S.testConnection({...args, fetchImpl})},
     TaskOutStore: {read: async () => {if (options.readGate) await options.readGate.promise; return clone(disk);}, write: async next => {disk = clone(next);}}, fetch: fetchImpl,
     chrome: {storage: {local: storage(local), session: storage(sessionStorage)}, permissions: {contains: async () => true},
       runtime: {id: 'test', getURL: file => `chrome-extension://test/${file}`, sendMessage: async () => {}, onMessage: event('message'), onInstalled: event('installed'), onStartup: event('startup')},

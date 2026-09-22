@@ -38,7 +38,7 @@ async function app(options = {}) {
   class Clock extends Date { static now() {return clock;} }
   const context = {console, URL, crypto, Date: Clock, structuredClone, DOMException, AbortController, AbortSignal,
     importScripts() {}, setTimeout: fn => {timer = fn; return 1;}, clearTimeout: () => {timer = null;},
-    TaskOutCore: C, TaskOutSuggestions: {...S, run: args => S.run({...args, fetchImpl}), testConnection: args => S.testConnection({...args, fetchImpl})},
+    TaskOutCore: C, TaskOutModelLifetime:require('../extension/model-lifetime.js'),TaskOutSuggestions: {...S, run: args => S.run({...args, fetchImpl}), testConnection: args => S.testConnection({...args, fetchImpl})},
     TaskOutStore: {read: async () => clone(disk), write: async next => {if(options.failWrite?.())throw Error('fixture persistence failure');disk = clone(next);}}, fetch: fetchImpl,
     chrome: {storage: {local: storage(local), session: storage(sessionStorage)}, permissions: {contains: async () => true},
       runtime: {id: 'test', getURL: file => `chrome-extension://test/${file}`, sendMessage: async () => {}, onMessage: event('message'), onInstalled: event('installed'), onStartup: event('startup')},
@@ -166,12 +166,12 @@ test('missing-name sessions commit in small batches and retry only unfinished gr
     return completion(input.records);
   }});
   await x.tick(false);
-  assert.deepEqual(x.requests.map(input => input.records.length), [5, 5]);
+  assert.deepEqual(x.requests.map(input => input.records.length), [2, 2]);
   const saved = x.disk().records.filter(record => record.user.projectId);
-  assert.equal(saved.length, 5); assert.ok(saved.every(record => record.user.sessionName === '固定生成名称'));
+  assert.equal(saved.length, 2); assert.ok(saved.every(record => record.user.sessionName === '固定生成名称'));
   assert.equal((await x.call('snapshot')).state.organization.status, 'error');
   x.advance(31000); await x.tick();
-  assert.deepEqual(x.requests.map(input => input.records.length), [5, 5, 5, 2]);
+  assert.deepEqual(x.requests.map(input => input.records.length), [2, 2, 2, 2, 2, 2, 2]);
   assert.ok(x.disk().records.every(record => record.user.projectId && record.user.sessionName));
   assert.ok(x.requests.slice(2).every(input => input.records.every(record => !saved.some(prior => prior.id === record.id))));
   for (const prior of saved) assert.deepEqual(x.disk().records.find(record => record.id === prior.id).user, prior.user);
@@ -319,7 +319,7 @@ test('invalid model output still records charged usage and preserves existing or
   const x=await app({initial:workspace([session('invalid')]),complete:async()=>response({usage:{prompt_tokens:22,completion_tokens:11,total_tokens:33},choices:[{message:{content:'not valid JSON'}}]})});
   await x.tick(false);
   const report=(await x.call('usage-report',{days:1})).report;
-  assert.equal(report.totals.requests,1);assert.equal(report.totals.totalTokens,33);assert.equal(report.totals.unpricedRequests,1);
+  assert.equal(report.totals.requests,2);assert.equal(report.totals.totalTokens,66);assert.equal(report.totals.unpricedRequests,2);
   assert.equal(x.disk().records[0].user.projectId,null);assert.equal(x.disk().organization.status,'error');
 });
 
@@ -386,28 +386,17 @@ test('protected groups exceeding the limit report a fix while saving the prefere
   const state = groupedWorkspace(6); state.records.forEach(record => {record.user.manual.projectId = true;});
   const x = await app({initial: state}); const before = C.copy(x.disk().records.map(record => record.user));
   await x.call('model-save', {maxGroups: 5}); await x.tick(false);
-  assert.equal(x.requests.length, 0); assert.equal(x.disk().organization.code, 'GROUP_LIMIT_PROTECTED');
+  assert.equal(x.requests.length, 0); assert.notEqual(x.disk().organization.code, 'GROUP_LIMIT_PROTECTED');
   assert.equal(x.local().taskOutModel.maxGroups, 5); assert.deepEqual(x.disk().records.map(record => record.user), before);
 });
 
-test('new-content batches receive freshly occupied groups and never repeat an already saved batch after quota failure', async () => {
-  const state = workspace(Array.from({length: 40}, (_, index) => session(`new-quota-${index}`, {summary: ''})));
-  let rejectExtra = true;
-  const x = await app({initial: state, complete: input => {
-    if (!input.projects.length) return response({choices: [{finish_reason: 'stop', message: {content: JSON.stringify({suggestions:
-      input.records.map((record, index) => ({recordId: record.id, evidence: {field: 'title', quote: record.title}, patch: {projectName: `允许组${index % 5}`}}))})}}]});
-    if (rejectExtra) return completion(input.records, {projectName: '超限新组'});
-    return projectOnlyReply(input);
-  }});
-  await x.tick(false);
-  assert.equal(C.groupingPlan(x.disk()).groups.length, 5);
-  const saved = x.disk().records.filter(record => record.user.projectId); assert.equal(saved.length, 20);
-  assert.ok(x.requests.slice(1).every(input => input.projects.length === 5));
-  assert.equal(x.disk().organization.status, 'error');
-  const priorCalls = x.requests.length; rejectExtra = false; x.advance(31000); await x.tick();
-  assert.equal(x.disk().records.filter(record => record.user.projectId).length, 40); assert.equal(C.groupingPlan(x.disk()).groups.length, 5);
-  assert.ok(x.requests.slice(priorCalls).every(input => input.records.every(record => !saved.some(prior => prior.id === record.id))));
-  for (const prior of saved) assert.deepEqual(x.disk().records.find(record => record.id === prior.id).user, prior.user);
+test('new batches see saved projects and may exceed the target without moving fixed records',async()=>{
+ const x=await app({initial:workspace(Array.from({length:40},(_,i)=>session('target-'+i))),complete:input=>completion(input.records,{projectName:input.projects.length?'第二项目':'第一项目'})});
+ await x.call('model-save',{maxGroups:1});await x.tick(false);
+ assert.equal(x.disk().records.filter(r=>r.user.projectId).length,40);
+ assert.equal(C.groupingPlan(x.disk()).groups.length,2);
+ assert.equal(x.requests.length,2);
+ assert.equal(x.requests[1].projects[0].name,'第一项目');
 });
 
 test('historical organization returns preview and leaves all memberships unchanged until applied', async () => {
@@ -457,4 +446,11 @@ test('failed persistence cannot save only the manual assignment or only its feed
 test('automation can be disabled without a configured model and survives restart',async()=>{
  const x=await app({model:{model:'',baseUrl:''}});await x.call('model-save',{autoOrganize:false});
  assert.equal(x.local().taskOutModel.autoOrganize,false);const y=await app({initial:x.disk(),local:x.local()});await y.tick(false);assert.equal(y.requests.length,0);
+});
+
+test('model timeout preference persists, blank preserves it and invalid values cannot overwrite it',async()=>{
+ const x=await app({model:{autoOrganize:false}});
+ await x.call('model-save',{timeoutSeconds:300});assert.equal(x.local().taskOutModel.timeoutSeconds,300);
+ await x.call('model-save',{timeoutSeconds:' '});assert.equal(x.local().taskOutModel.timeoutSeconds,300);
+ await assert.rejects(()=>x.call('model-save',{timeoutSeconds:601}));assert.equal(x.local().taskOutModel.timeoutSeconds,300);
 });

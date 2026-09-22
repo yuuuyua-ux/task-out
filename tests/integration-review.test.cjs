@@ -38,7 +38,7 @@ async function background(initial, fetchImpl, options = {}) {
     console, URL, crypto, Date: Clock, structuredClone, AbortController, AbortSignal, DOMException,
     setTimeout: callback => { scheduled = callback; return 1; },
     clearTimeout: () => { scheduled = null; },
-    TaskOutCore: C, TaskOutSuggestions: { ...Suggestions,
+    TaskOutCore: C, TaskOutModelLifetime:require('../extension/model-lifetime.js'),TaskOutSuggestions: { ...Suggestions,
       run: args => Suggestions.run({ ...args, fetchImpl }), testConnection: args => Suggestions.testConnection({ ...args, fetchImpl }) },
     TaskOutStore: { read: async () => clone(disk), write: async state => { disk = clone(state); } },
     importScripts() {}, fetch: fetchImpl,
@@ -368,7 +368,7 @@ test('review: forgetting the model key removes legacy migrated credentials as we
 });
 
 test('review: omitted, empty and whitespace-only model fields preserve the saved configuration', async () => {
-  const saved = { maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
+  const saved = { timeoutSeconds:120, maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
     rules: '优先按任务目标分类', autoSuggest: true, autoOrganize: true };
   const app = await background(C.initial(), () => { throw Error('No network'); }, { local: { taskOutModel: saved } });
   for (const fields of [{}, { baseUrl: '', model: '', rules: '', apiKey: '' },
@@ -379,7 +379,7 @@ test('review: omitted, empty and whitespace-only model fields preserve the saved
 });
 
 test('review: a partial model save changes only supplied values, including explicit false', async () => {
-  const saved = { maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
+  const saved = { timeoutSeconds:120, maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
     rules: '优先按任务目标分类', autoSuggest: true, autoOrganize: true };
   const app = await background(C.initial(), () => { throw Error('No network'); }, { local: { taskOutModel: saved } });
   await app.dispatch({ action: 'model-save', model: ' next-model ', baseUrl: '', apiKey: '', rules: '', autoSuggest: false });
@@ -400,7 +400,7 @@ test('review: first-time model setup still requires an address and a model', asy
 });
 
 test('review: changing the model service without a replacement key or explicit clear is rejected atomically', async () => {
-  const saved = { maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
+  const saved = { timeoutSeconds:120, maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
     rules: '优先按任务目标分类', autoSuggest: true, autoOrganize: true };
   const app = await background(C.initial(), () => { throw Error('No network'); }, { local: { taskOutModel: saved } });
   for (const key of [undefined, '', ' \t\n ']) {
@@ -415,7 +415,7 @@ test('review: equivalent model service URL forms preserve the existing key', asy
     ['https://model.example/v1', ' https://model.example/v1/chat/completions/ '],
     ['https://model.example/v1/chat/completions', 'https://model.example/v1']
   ]) {
-    const saved = { maxGroups: 5, baseUrl: oldUrl, model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY', rules: '已有偏好', autoSuggest: false, autoOrganize: true };
+    const saved = { timeoutSeconds:120, maxGroups: 5, baseUrl: oldUrl, model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY', rules: '已有偏好', autoSuggest: false, autoOrganize: true };
     const app = await background(C.initial(), () => { throw Error('No network'); }, { local: { taskOutModel: saved } });
     await app.dispatch({ action: 'model-save', baseUrl: enteredUrl, apiKey: '' });
     assert.deepEqual(app.local().taskOutModel, { ...saved, baseUrl: 'https://model.example/v1' });
@@ -423,7 +423,7 @@ test('review: equivalent model service URL forms preserve the existing key', asy
 });
 
 test('review: changing the model service accepts an explicit replacement key or explicit clear', async () => {
-  const saved = { maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
+  const saved = { timeoutSeconds:120, maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
     rules: '已有偏好', autoSuggest: false, autoOrganize: true };
   for (const fields of [{ apiKey: ' SYNTHETIC_REPLACEMENT_KEY ' }, { forgetKey: true }]) {
     const app = await background(C.initial(), () => { throw Error('No network'); }, { local: { taskOutModel: saved } });
@@ -434,7 +434,7 @@ test('review: changing the model service accepts an explicit replacement key or 
 });
 
 test('review: concurrent partial model saves merge against the latest completed save', async () => {
-  const saved = { maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
+  const saved = { timeoutSeconds:120, maxGroups: 5, baseUrl: 'https://model.example/v1', model: 'example', apiKey: 'SYNTHETIC_SAVED_KEY',
     rules: '已有偏好', autoSuggest: true, autoOrganize: true };
   const gate = deferred(), firstSaveStarted = deferred();
   let checks = 0;

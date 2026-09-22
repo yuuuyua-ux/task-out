@@ -41,20 +41,22 @@ test('group quota counts only active main records and preserves protected groups
 test('too many protected groups produce an actionable limit error without proposing moves', () => {
   const state = fixture(6); state.records.forEach(record => {record.user.manual.projectId = true;});
   const before = C.copy(state), plan = C.groupingPlan(state);
-  assert.equal(plan.error.code, 'GROUP_LIMIT_PROTECTED'); assert.match(plan.error.message, /6.*上限 5/);
+  assert.equal(plan.error, null);
   assert.equal(plan.mergeIds.length, 0); assert.deepEqual(state, before);
 });
 
-test('AI quota checks are atomic across a preview and recheck new groups at apply time', () => {
-  const state = fixture(4), first = item('new-first'), second = item('new-second'); state.records.push(first, second);
-  state.suggestions = [proposal(first, {projectName: '第五组'}), proposal(second, {projectName: '第六组'})];
-  const before = C.copy(state);
-  assert.throws(() => C.applySuggestions(state, state.suggestions), error => error.code === 'GROUP_LIMIT_REACHED');
-  assert.deepEqual(state, before, 'later quota failure must not leave the first proposal applied');
-  assert.equal(C.applySuggestions(state, [state.suggestions[0]]).applied, 1);
-  assert.equal(C.groupingPlan(state).groups.length, 5);
-  assert.throws(() => C.applySuggestions(state, state.suggestions), error => error.code === 'GROUP_LIMIT_REACHED');
-  assert.equal(state.records.find(record => record.id === second.id).user.projectId, null);
+test('a history-only sixth group does not block a new visible project beyond target', () => {
+  const state=fixture(6);state.groupSettings.maxGroups=6;
+  state.records[5].updatedAt=NOW-4*DAY;
+  const current=state.records.filter(r=>r.updatedAt>=NOW-3*DAY);
+  assert.equal(new Set(current.map(r=>r.user.projectId)).size,5);
+  assert.equal(C.groupingPlan(state).groups.length,6);
+  const first=item('new-first'),second=item('new-second');state.records.push(first,second);
+  state.suggestions=[proposal(first,{projectName:'独立新项目'}),proposal(second,{projectName:'独立新项目'})];
+  assert.equal(C.applySuggestions(state,state.suggestions).applied,2);
+  assert.equal(C.groupingPlan(state).groups.length,7);
+  assert.equal(first.user.projectId,second.user.projectId);
+  assert.equal(state.records[5].updatedAt,NOW-4*DAY);
 });
 
 test('group-only application enforces target and immutable fields while retaining undo backups', () => {

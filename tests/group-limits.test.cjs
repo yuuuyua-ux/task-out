@@ -21,40 +21,32 @@ test('group limits default to five for absent settings and reject invalid explic
 
 test('unique existing names reuse real IDs and repeated proposed names consume only one remaining slot', async () => {
   const result = await S.run({items: [web('a'), web('b'), web('c')], projects, config, fetchImpl: async (_url, options) => {
-    const input = inputOf(options); assert.equal(input.maxGroups, 2); assert.equal(input.remainingNewGroups, 1);
+    const input = inputOf(options); assert.equal(input.targetGroups, 2); assert.equal(input.remainingNewGroups, null);
     return reply([suggestion('a', {projectName: '原有项目'}), suggestion('b', {projectName: '共同新项目'}), suggestion('c', {projectName: '共同新项目'})]);
   }});
   assert.deepEqual(result.suggestions.map(row => row.patch), [{projectId: 'existing'}, {projectName: '共同新项目'}, {projectName: '共同新项目'}]);
 });
 
-test('over-limit answers get one correction with no provisional slots or raw rejected answer carried forward', async () => {
-  const requests = [], usage = [];
-  const result = await S.run({items: [web('a'), web('b')], projects, config, onUsage: event => usage.push(event), fetchImpl: async (_url, options) => {
-    requests.push(options); const input = inputOf(options);
-    assert.equal(input.remainingNewGroups, 1); assert.equal(input.projects.length, 1);
-    assert.equal(options.body.includes('PRIVATE_REJECTED_OUTPUT'), false);
-    return reply(requests.length === 1 ? [suggestion('a', {projectName: '新项目一'}), {...suggestion('b', {projectName: '新项目二'}), reason: 'PRIVATE_REJECTED_OUTPUT'}] :
-      [suggestion('a', {projectName: '共同项目'}), suggestion('b', {projectName: '共同项目'})]);
-  }});
-  assert.equal(requests.length, 2); assert.equal(result.suggestions.length, 2);
-  assert.deepEqual(usage.map(event => event.attempt), [1, 2]);
-  assert.equal(requests[0].signal, requests[1].signal);
+test('distinct projects may exceed the target without a quota repair', async () => {
+ let calls=0;
+ const result=await S.run({items:[web('a'),web('b')],projects,config:{...config,maxGroups:1},requireGrounding:true,fetchImpl:async(_url,options)=>{
+  calls++;const input=inputOf(options);assert.equal(input.targetGroups,1);assert.equal(input.allowNewProjects,true);assert.equal(input.remainingNewGroups,null);
+  return reply(input.records.map((r,i)=>({...suggestion(r.id,{projectName:'独立项目'+i}),evidence:{field:'title',quote:r.title}})));
+ }});
+ assert.equal(calls,1);assert.equal(result.suggestions.length,2);
 });
 
-test('persistent over-limit output is rejected instead of silently dropping extra groups', async () => {
-  let calls = 0; const items = [web('a'), web('b')];
-  await assert.rejects(() => S.run({items, projects, config, fetchImpl: async () => {
-    calls++; return reply([suggestion('a', {projectName: '新项目一'}), suggestion('b', {projectName: '新项目二'})]);
-  }}), {code: 'GROUP_LIMIT_EXCEEDED'});
-  assert.equal(calls, 2); assert.equal(items.some(item => item.projectId), false);
+test('an above-target catalog does not prevent reuse or evidence-backed creation', async () => {
+ const result=await S.run({items:[web('a')],projects:[...projects,{id:'second',name:'另一个项目'}],config:{...config,maxGroups:1},fetchImpl:async()=>reply([suggestion('a',{projectName:'第三个项目'})])});
+ assert.equal(result.suggestions[0].patch.projectName,'第三个项目');
 });
 
 test('a run shares its remaining quota across normal batches and returns provisional aliases as project names', async () => {
   const items = Array.from({length: 21}, (_, n) => web('row-' + n)); let calls = 0;
   const result = await S.run({items, config: {...config, maxGroups: 1}, fetchImpl: async (_url, options) => {
     calls++; const input = inputOf(options);
-    if (calls === 1) {assert.equal(input.remainingNewGroups, 1); return reply(input.records.map(row => suggestion(row.id, {projectName: '唯一项目'})));}
-    assert.equal(input.remainingNewGroups, 0); assert.equal(input.projects.length, 1); assert.equal(input.projects[0].name, '唯一项目');
+    if (calls === 1) {assert.equal(input.remainingNewGroups, null); return reply(input.records.map(row => suggestion(row.id, {projectName: '唯一项目'})));}
+    assert.equal(input.remainingNewGroups, null); assert.equal(input.projects.length, 1); assert.equal(input.projects[0].name, '唯一项目');
     return reply(input.records.map(row => suggestion(row.id, {projectId: input.projects[0].id})));
   }});
   assert.equal(calls, 2); assert.equal(result.suggestions.length, 21);
@@ -62,19 +54,15 @@ test('a run shares its remaining quota across normal batches and returns provisi
   assert.equal(result.suggestions.some(row => row.patch.projectId), false);
 });
 
-test('later batches and length-split siblings cannot independently spend the same final new-group slot', async () => {
-  for (const split of [false, true]) {
-    let calls = 0; const quotas = [];
-    const result = await S.run({items: Array.from({length: split ? 2 : 21}, (_, n) => web('row-' + n)), config: {...config, maxGroups: 1}, fetchImpl: async (_url, options) => {
-      calls++; const input = inputOf(options); quotas.push(input.remainingNewGroups);
-      if (split && calls === 1) return reply('TRUNCATED_RESPONSE', 'length');
-      if (calls === (split ? 2 : 1)) return reply(input.records.map(row => suggestion(row.id, {projectName: '唯一项目'})));
-      if (calls === (split ? 3 : 2)) return reply(input.records.map(row => suggestion(row.id, {projectName: '超额项目'})));
-      return reply(input.records.map(row => suggestion(row.id, {projectId: input.projects.find(project => project.name === '唯一项目').id})));
-    }});
-    assert.equal(calls, split ? 4 : 3); assert.deepEqual(quotas, split ? [1, 1, 0, 0] : [1, 0, 0]);
-    assert.equal(result.suggestions.every(row => row.patch.projectName === '唯一项目'), true);
-  }
+test('later batches and split siblings may create distinct projects beyond the target',async()=>{
+ for(const split of [false,true]){
+  let calls=0;
+  const result=await S.run({items:Array.from({length:split?2:21},(_,i)=>web('r'+i)),config:{...config,maxGroups:1},fetchImpl:async(_url,options)=>{
+   calls++;if(split&&calls===1)return reply('CUT','length');
+   const input=inputOf(options);return reply(input.records.map(r=>suggestion(r.id,{projectName:'独立项目'+calls})));
+  }});
+  assert.equal(calls,split?3:2);assert.equal(new Set(result.suggestions.map(r=>r.patch.projectName)).size,2);
+ }
 });
 
 test('group-only merging excludes protected and denied records and sends only necessary authorized grouping evidence', async () => {
@@ -101,7 +89,6 @@ test('group-only merging rejects new projects, missing assignments and unrelated
     assert.equal(calls, count);
   }
   await assert.rejects(() => S.run({items: [item], projects: [], config, groupOnly: true, fetchImpl: () => assert.fail('No target exists')}), {code: 'INCOMPLETE_GROUP_ASSIGNMENT'});
-  await assert.rejects(() => S.run({items: [item], projects: [...projects, {id: 'another', name: '另一项目'}], config: {...config, maxGroups: 1}, fetchImpl: () => assert.fail('Existing groups already exceed cap')}), {code: 'GROUP_LIMIT_EXCEEDED'});
 });
 
 test('ambiguous existing names share the correction budget with over-limit output and must resolve by ID', async () => {
@@ -111,7 +98,7 @@ test('ambiguous existing names share the correction budget with over-limit outpu
   }});
   assert.equal(result.suggestions[0].patch.projectId, 'first'); assert.equal(calls, 2);
   calls = 0;
-  await assert.rejects(() => S.run({items: [web('a')], projects: catalog, config, fetchImpl: async () => {
+  await assert.rejects(() => S.run({items: [web('a')], projects: catalog, config, allowNewProjects:false, fetchImpl: async () => {
     calls++; return reply([suggestion('a', calls === 1 ? {projectId: 'invented'} : {projectName: '超额'})]);
   }}), {code: 'GROUP_LIMIT_EXCEEDED'});
   assert.equal(calls, 2);
@@ -125,7 +112,7 @@ test('quota correction shares the original deadline and cannot ignore cancellati
   let expire, timers = 0, cleared = 0;
   const context = {URL, AbortController, DOMException, setTimeout(fn, delay) {assert.equal(delay, 120000); timers++; expire = fn; return 1;}, clearTimeout() {cleared++;}};
   vm.createContext(context); vm.runInContext(fs.readFileSync('extension/suggestions.js', 'utf8'), context); calls = 0;
-  await assert.rejects(() => context.TaskOutSuggestions.run({items: [web('a')], projects, config: {...config, maxGroups: 1}, fetchImpl: async () => {
+  await assert.rejects(() => context.TaskOutSuggestions.run({items: [web('a')], projects, config: {...config, maxGroups: 1}, allowNewProjects:false, fetchImpl: async () => {
     calls++; if (calls === 1) return reply([suggestion('a', {projectName: '超额'})]); expire(); return new Promise(() => {});
   }}), {name: 'TimeoutError'});
   assert.equal(calls, 2); assert.equal(timers, 1); assert.equal(cleared, 1);

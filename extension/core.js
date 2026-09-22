@@ -342,7 +342,7 @@ const TaskOutCore = (() => {
     const keepIds = groups.slice(0, Math.max(maxGroups, protectedCount)).map(project => project.id);
     return {maxGroups, groups, protectedCount, keepIds, overLimit: groups.length > maxGroups,
       mergeIds: active.filter(record => record.user.projectId && !keepIds.includes(record.user.projectId) && groupMovable(record)).map(record => record.id),
-      error: protectedCount > maxGroups ? {code: 'GROUP_LIMIT_PROTECTED', message: `已有 ${protectedCount} 个人工固定或不可自动调整的分组，超过上限 ${maxGroups}。请提高上限，或手动调整这些归属后重试。`} : null};
+      error: null};
   }
   function publicItem(record, now = Date.now(), connections = []) {
     const r = record, u = r.user, days = historyWindowDays(r, connections);
@@ -523,7 +523,7 @@ const TaskOutCore = (() => {
       const match = learningMatch(state, r);
       if (match.status !== 'matched') { if (match.status === 'conflict') excluded.push({id: r.id, reason: match.message}); continue; }
       const p = l.profiles.find(p => p.id === match.projectId && !p.deleted), plan = groupingPlan(state, options);
-      if (!p || !plan.groups.some(g => g.id === p.id) && plan.groups.length >= plan.maxGroups) { excluded.push({id: r.id, reason: '规则目标没有可用分组名额，原归属保留。'}); continue; }
+      if (!p) { excluded.push({id: r.id, reason: '规则目标已删除或不可用，原归属保留。'}); continue; }
       if (r.user.projectId === p.id) continue;
       if (options.preview) {
         suggestions.push({id: uid('suggestion:'), recordId: r.id, kind: 'local-rule', revision: r.user.revision, observedUpdatedAt: r.updatedAt, contentRevision: r.contentRevision, policyRevision: state.policyRevision, learningRevision: l.revision, patch: {projectId: p.id}, ruleId: match.ruleId, reason: match.reason}); continue;
@@ -669,8 +669,6 @@ const TaskOutCore = (() => {
           const allowedIds = stored.allowedProjectIds || options.allowedProjectIds || plan.keepIds;
           if (!groupScope(record, state, options) || !groupMovable(record) || !patch.projectId || !allowedIds.includes(patch.projectId) || !plan.keepIds.includes(patch.projectId))
             throw Object.assign(Error('保留分组或人工归属已变化，请重新合并。'), {code: 'GROUP_LIMIT_CONFLICT'});
-        } else if ((!patch.projectId && plannedProject || patch.projectId && !plan.groups.some(project => project.id === patch.projectId)) && plan.groups.length >= plan.maxGroups) {
-          throw Object.assign(Error(`当前已有 ${plan.groups.length} 个在用分组，达到上限 ${plan.maxGroups}。请使用已有分组，或提高上限后重新整理。`), {code: 'GROUP_LIMIT_REACHED'});
         }
         if (plannedProject && !plannedProject.id) {
           const project = saveProject(state, plannedProject); created.push(copy(project)); patch.projectId = project.id;

@@ -15,7 +15,7 @@ async function app(options = {}) {
   const storage = data => ({get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, clone(data[key])])),
     set: async patch => Object.assign(data, clone(patch)), setAccessLevel: async () => {}});
   const context = {console, URL, crypto, structuredClone, DOMException, AbortController, AbortSignal: options.abortSignal || AbortSignal, importScripts() {}, setTimeout: () => 1, clearTimeout() {},
-    TaskOutCore: C, TaskOutSuggestions: S, TaskOutStore: {read: async () => clone(disk), write: async value => {disk = clone(value);}},
+    TaskOutCore: C, TaskOutModelLifetime:require('../extension/model-lifetime.js'),TaskOutSuggestions: S, TaskOutStore: {read: async () => clone(disk), write: async value => {disk = clone(value);}},
     fetch: async (url, init) => {requests.push({url, init}); return options.fetch ? options.fetch(url, init) : response({});},
     chrome: {storage: {local: storage(local), session: storage(session)}, permissions: {contains: async () => true},
       runtime: {id: 'a'.repeat(32), getURL: file => ORIGIN + '/' + file, sendMessage: async () => {}, onMessage: event('message'), onStartup: event('startup'), onInstalled: event('installed')},

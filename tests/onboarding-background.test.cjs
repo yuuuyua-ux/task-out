@@ -15,7 +15,7 @@ async function app(options={}) {
   const storage=data=>({get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,clone(data[k])])),set:async v=>Object.assign(data,clone(v)),setAccessLevel:async()=>{}});
   const fetchImpl=async(url,init)=>{requests.push({path:new URL(url).pathname,body:init.body&&JSON.parse(init.body)});return options.fetch?options.fetch(url,init):response({});};
   const ctx={console,URL,crypto,structuredClone,DOMException,AbortController,AbortSignal,importScripts(){},setTimeout:()=>1,clearTimeout(){},
-    TaskOutCore:C,TaskOutSuggestions:S,TaskOutStore:{read:async()=>clone(disk),write:async value=>{disk=clone(value);}},fetch:fetchImpl,
+    TaskOutCore:C,TaskOutModelLifetime:require('../extension/model-lifetime.js'),TaskOutSuggestions:S,TaskOutStore:{read:async()=>clone(disk),write:async value=>{disk=clone(value);}},fetch:fetchImpl,
     chrome:{storage:{local:storage(local),session:storage(session)},permissions:{contains:async()=>options.permission!==false},
       runtime:{id:'a'.repeat(32),getURL:p=>'chrome-extension://'+'a'.repeat(32)+'/'+p,sendMessage:async()=>{},onMessage:event('message'),onStartup:event('startup'),onInstalled:event('installed')},
       tabs:{query:async()=>[],onCreated:event('created'),onUpdated:event('updated'),onRemoved:event('removed'),onActivated:event('activated')},windows:{onFocusChanged:event('focus')},alarms:{create(){},onAlarm:event('alarm')},action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{}}}};

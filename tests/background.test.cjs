@@ -19,7 +19,7 @@ async function setup({local={},session={},initial,failRemove=false}={}) {
       onCreated:event('created'),onUpdated:event('updated'),onRemoved:event('removed'),onActivated:event('activated')},
     windows:{update:async()=>{},onFocusChanged:event('focus')},alarms:{create:async()=>{},onAlarm:event('alarm')},action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{},onClicked:event('toolbar')}};
   const ctx={chrome,crypto,structuredClone,URL,AbortSignal,AbortController,Date,console,importScripts:()=>{},
-    setTimeout:()=>0,clearTimeout:()=>{},TaskOutCore:core,TaskOutSuggestions:suggestions,
+    setTimeout:()=>0,clearTimeout:()=>{},TaskOutCore:core,TaskOutModelLifetime:require('../extension/model-lifetime.js'),TaskOutSuggestions:suggestions,
     TaskOutStore:{read:async()=>structuredClone(db),write:async next=>{if(failSave)throw Error('disk full');db=structuredClone(next);}},
     fetch:async()=>{throw Error('No network in test');}};
   vm.createContext(ctx);vm.runInContext(fs.readFileSync('extension/background.js','utf8')+'\nthis.testAPI={ready,dispatch,enqueue,getState:()=>state};',ctx);
@@ -63,6 +63,19 @@ test('manual project and tags persist through worker restarts; tab epoch does no
   const restored=(await restarted.call('snapshot')).state.items.find(i=>i.id===item.id);assert.equal(restored.projectId,project.id);assert.deepEqual([...restored.tags],['需求规划']);
   const browserRestart=await setup({initial:x.db(),local:x.local,session:{}});
   const records=(await browserRestart.call('snapshot')).state.items;assert.equal(records.length,4);assert.equal(records.find(i=>i.id===item.id).needsBinding,true);
+});
+
+test('worker restart reports an interrupted organization and backs off without losing saved assignments',async()=>{
+  const initial=core.initial();
+  initial.organization={status:'running',lastApplied:3,lastRunAt:100};
+  const before=Date.now(),x=await setup({initial});
+  const status=x.db().organization;
+  assert.equal(status.status,'error');
+  assert.equal(status.code,'WORKER_INTERRUPTED');
+  assert.equal(status.lastApplied,3);
+  assert.equal(status.lastRunAt,100);
+  assert.ok(status.retryAt>=before+30000);
+  assert.match(status.message,/浏览器后台中断/);
 });
 
 test('empty projects are removed automatically on refresh and restart while a just-created project remains assignable',async()=>{
